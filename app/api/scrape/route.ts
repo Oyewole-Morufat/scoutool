@@ -4,7 +4,7 @@ import { isIP } from "node:net";
 
 export const maxDuration = 300;
 
-// Discovery-first configuration
+// Scanner settings
 const MAX_DOMAINS = 1000;
 const SITE_CONCURRENCY = 8;
 const PAGE_CONCURRENCY = 4;
@@ -12,6 +12,9 @@ const MAX_CONTACT_PAGES = 10;
 const REQUEST_TIMEOUT = 9000;
 const MAX_HTML_SIZE = 1_000_000;
 const MAX_SITEMAP_SIZE = 400_000;
+
+const SCOUTOOL_USER_AGENT =
+  "ScoutoolPublicContactResearch/1.0";
 
 type Result = {
   email: string;
@@ -27,12 +30,21 @@ type Outcome = {
   results: Result[];
   status: Status;
   hostname: string;
+  reason?: string;
 };
 
 type FetchResult =
   | { status: "ok"; text: string; url: string }
-  | { status: "blocked"; url: string }
-  | { status: "missing" | "error"; url: string };
+  | {
+      status:
+        | "missing"
+        | "forbidden"
+        | "rate_limited"
+        | "unreachable"
+        | "error";
+      url: string;
+      httpStatus?: number;
+    };
 
 type RobotsRule = {
   allow: boolean;
@@ -42,7 +54,6 @@ type RobotsRule = {
 type RobotsData = {
   rules: RobotsRule[];
   sitemaps: string[];
-  blocked: boolean;
 };
 
 // --------------------------------------------
@@ -114,18 +125,18 @@ const LANGUAGES: Record<string, string> = {
   fi: "Finnish",
 };
 
-// Common business contact pages in different languages.
 const CONTACT_PATHS = [
-  // Shopify
   "/policies/contact-information",
   "/pages/contact",
   "/pages/contact-us",
   "/pages/contacto",
   "/pages/informacion-de-contacto",
   "/pages/aviso-legal",
+  "/pages/sobre-nosotros",
+  "/pages/politica-de-privacidad",
   "/policies/privacy-policy",
-
-  // English
+  "/policies/legal-notice",
+  "/policies/terms-of-service",
   "/contact",
   "/contact-us",
   "/contact.html",
@@ -138,8 +149,7 @@ const CONTACT_PATHS = [
   "/company",
   "/team",
   "/imprint",
-
-  // Spanish
+  "/privacy-policy",
   "/contacto",
   "/contactanos",
   "/contactenos",
@@ -149,56 +159,33 @@ const CONTACT_PATHS = [
   "/atencion-al-cliente",
   "/ayuda",
   "/empresa",
-  "/pages/sobre-nosotros",
-  "/pages/ayuda",
   "/informacion-de-contacto",
-
-  // French
+  "/politica-de-privacidad",
+  "/politicas-de-privacidad",
   "/contactez-nous",
   "/nous-contacter",
   "/a-propos",
   "/mentions-legales",
-
-  // German
   "/kontakt",
   "/impressum",
   "/uber-uns",
   "/kundenservice",
-  "/pages/impressum",
-
-  // Italian
   "/contatti",
   "/chi-siamo",
   "/assistenza",
-
-  // Portuguese
   "/contato",
   "/sobre-nos",
   "/quem-somos",
-
-  // Dutch
   "/over-ons",
 ];
 
 const RELEVANT_PATH =
   /(contact|contacto|contactanos|contactenos|about|sobre|nosotros|quienes|support|help|ayuda|kontakt|impressum|contatti|contato|contacter|contactez|empresa|company|team|customer|cliente|aviso-legal|informacion-de-contacto|privacy|privacidad|legal|imprint|atencion)/i;
 
-// Known domain suffixes used to reject common image extensions
-// and obvious example addresses.
-const VALID_TLDS = new Set([
-  "com", "org", "net", "edu", "gov", "mil", "int",
-  "info", "biz", "name", "pro", "co", "io", "ai",
-  "app", "dev", "shop", "store", "online", "site",
-  "website", "xyz", "tech", "agency", "me", "us",
-  "uk", "es", "de", "fr", "it", "nl", "be", "ie",
-  "in", "au", "ca", "nz", "br", "mx", "sg", "jp",
-  "sa", "qa", "kw", "om", "bh", "eg", "tr", "pt",
-  "ch", "at", "se", "no", "dk", "fi", "pl", "gr",
-  "eu", "cat", "tv", "cc", "cloud", "design",
-  "digital", "group", "life", "world", "solutions",
-  "marketing", "consulting", "technology", "email",
-  "network", "services", "finance", "center",
-  "company", "systems", "land", "space", "store",
+const IMAGE_EXTENSIONS = new Set([
+  "png", "jpg", "jpeg", "gif", "svg", "webp",
+  "avif", "ico", "bmp", "tif", "tiff",
+  "css", "js", "map", "woff", "woff2",
 ]);
 
 const PLACEHOLDER_DOMAINS = new Set([
@@ -217,18 +204,9 @@ const PLACEHOLDER_DOMAINS = new Set([
 ]);
 
 const PLACEHOLDER_NAMES = new Set([
-  "example",
-  "test",
-  "demo",
-  "sample",
-  "nombre",
-  "tu",
-  "email",
-  "yourname",
-  "your-email",
-  "su-email",
-  "usuario",
-  "correo",
+  "example", "test", "demo", "sample",
+  "nombre", "tu", "email", "yourname",
+  "your-email", "su-email", "usuario", "correo",
 ]);
 
 // --------------------------------------------
@@ -433,7 +411,7 @@ async function fetchPublicText(
         redirect: "manual",
         signal: AbortSignal.timeout(REQUEST_TIMEOUT),
         headers: {
-          "User-Agent": "ScoutoolPublicContactResearch/1.0",
+          "User-Agent": SCOUTOOL_USER_AGENT,
           Accept: "text/html, text/plain, application/xml, text/xml",
         },
       });
@@ -449,18 +427,44 @@ async function fetchPublicText(
         continue;
       }
 
-      if (
-        [401, 403, 429, 503].includes(response.status)
-      ) {
-        return { status: "blocked", url: currentUrl };
+      if ([401, 403].includes(response.status)) {
+        return {
+          status: "forbidden",
+          url: currentUrl,
+          httpStatus: response.status,
+        };
+      }
+
+      if (response.status === 429) {
+        return {
+          status: "rate_limited",
+          url: currentUrl,
+          httpStatus: 429,
+        };
       }
 
       if ([404, 410].includes(response.status)) {
-        return { status: "missing", url: currentUrl };
+        return {
+          status: "missing",
+          url: currentUrl,
+          httpStatus: response.status,
+        };
+      }
+
+      if (response.status >= 500) {
+        return {
+          status: "unreachable",
+          url: currentUrl,
+          httpStatus: response.status,
+        };
       }
 
       if (!response.ok) {
-        return { status: "error", url: currentUrl };
+        return {
+          status: "error",
+          url: currentUrl,
+          httpStatus: response.status,
+        };
       }
 
       const contentType = (
@@ -476,11 +480,11 @@ async function fetchPublicText(
         return { status: "missing", url: currentUrl };
       }
 
-      const length = Number(
+      const size = Number(
         response.headers.get("content-length") || 0,
       );
 
-      if (length > maxBytes) {
+      if (size > maxBytes) {
         return { status: "error", url: currentUrl };
       }
 
@@ -496,7 +500,10 @@ async function fetchPublicText(
         url: currentUrl,
       };
     } catch {
-      return { status: "error", url: currentUrl };
+      return {
+        status: "unreachable",
+        url: currentUrl,
+      };
     }
   }
 
@@ -508,25 +515,28 @@ async function fetchPublicText(
 // --------------------------------------------
 
 function parseRobots(text: string): RobotsData {
-  const rules: RobotsRule[] = [];
+  const groups: Array<{
+    agents: string[];
+    rules: RobotsRule[];
+  }> = [];
+
   const sitemaps: string[] = [];
 
   let agents: string[] = [];
   let groupRules: RobotsRule[] = [];
+  let rulesStarted = false;
 
   function saveGroup() {
-    const appliesToScoutool = agents.some(
-      (agent) =>
-        agent === "*" ||
-        agent.includes("scoutool"),
-    );
-
-    if (appliesToScoutool) {
-      rules.push(...groupRules);
+    if (agents.length > 0) {
+      groups.push({
+        agents: [...agents],
+        rules: [...groupRules],
+      });
     }
 
     agents = [];
     groupRules = [];
+    rulesStarted = false;
   }
 
   for (const rawLine of text.split(/\r?\n/)) {
@@ -535,6 +545,7 @@ function parseRobots(text: string): RobotsData {
     if (!line) continue;
 
     const index = line.indexOf(":");
+
     if (index < 0) continue;
 
     const key = line.slice(0, index).trim().toLowerCase();
@@ -546,32 +557,62 @@ function parseRobots(text: string): RobotsData {
     }
 
     if (key === "user-agent") {
-      if (groupRules.length > 0) {
+      if (rulesStarted) {
         saveGroup();
       }
 
-      agents.push(value.toLowerCase());
+      if (value) agents.push(value.toLowerCase());
       continue;
     }
 
-    if (
-      (key === "allow" || key === "disallow") &&
-      agents.length > 0 &&
-      value
-    ) {
-      groupRules.push({
-        allow: key === "allow",
-        path: value,
-      });
+    if (key === "allow" || key === "disallow") {
+      if (agents.length > 0) {
+        rulesStarted = true;
+
+        if (value) {
+          groupRules.push({
+            allow: key === "allow",
+            path: value,
+          });
+        }
+      }
     }
   }
 
   saveGroup();
 
+  const crawlerAgent = SCOUTOOL_USER_AGENT.toLowerCase();
+  let longestMatch = 0;
+
+  for (const group of groups) {
+    for (const agent of group.agents) {
+      if (
+        agent !== "*" &&
+        crawlerAgent.includes(agent) &&
+        agent.length > longestMatch
+      ) {
+        longestMatch = agent.length;
+      }
+    }
+  }
+
+  const selectedGroups =
+    longestMatch > 0
+      ? groups.filter((group) =>
+          group.agents.some(
+            (agent) =>
+              agent !== "*" &&
+              agent.length === longestMatch &&
+              crawlerAgent.includes(agent),
+          ),
+        )
+      : groups.filter((group) =>
+          group.agents.includes("*"),
+        );
+
   return {
-    rules,
+    rules: selectedGroups.flatMap((group) => group.rules),
     sitemaps: [...new Set(sitemaps)],
-    blocked: false,
   };
 }
 
@@ -583,15 +624,31 @@ function robotsAllows(
   let bestLength = -1;
 
   for (const rule of rules) {
-    const pattern = rule.path.replace(/\*$/, "");
+    const endAnchored = rule.path.endsWith("$");
+    const pattern = endAnchored
+      ? rule.path.slice(0, -1)
+      : rule.path;
 
-    if (!pathname.startsWith(pattern)) continue;
+    const regexPattern = pattern
+      .replace(/[.+?^${}()|[\]\\]/g, "\\$&")
+      .replace(/\*/g, ".*");
 
-    if (pattern.length > bestLength) {
+    const regex = new RegExp(
+      `^${regexPattern}${endAnchored ? "$" : ""}`,
+    );
+
+    if (!regex.test(pathname)) continue;
+
+    const specificity = Buffer.byteLength(
+      pattern.replace(/\*/g, ""),
+      "utf8",
+    );
+
+    if (specificity > bestLength) {
       best = rule;
-      bestLength = pattern.length;
+      bestLength = specificity;
     } else if (
-      pattern.length === bestLength &&
+      specificity === bestLength &&
       rule.allow
     ) {
       best = rule;
@@ -605,30 +662,79 @@ async function fetchRobots(
   origin: string,
   hostname: string,
   isSafeHost: (hostname: string) => Promise<boolean>,
-): Promise<RobotsData> {
-  const result = await fetchPublicText(
-    new URL("/robots.txt", origin).toString(),
+): Promise<{
+  rules: RobotsRule[];
+  sitemaps: string[];
+  allowedToContinue: boolean;
+  diagnostic: string;
+}> {
+  const robotsUrl = new URL("/robots.txt", origin).toString();
+
+  let result = await fetchPublicText(
+    robotsUrl,
     hostname,
     100_000,
     isSafeHost,
   );
 
-  if (result.status === "blocked") {
-    return {
-      rules: [],
-      sitemaps: [],
-      blocked: true,
-    };
+  if (result.status === "unreachable") {
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, 1200);
+    });
+
+    result = await fetchPublicText(
+      robotsUrl,
+      hostname,
+      100_000,
+      isSafeHost,
+    );
   }
 
   if (result.status === "ok") {
-    return parseRobots(result.text);
+    return {
+      ...parseRobots(result.text),
+      allowedToContinue: true,
+      diagnostic: "robots_ok",
+    };
+  }
+
+  // A missing or forbidden robots.txt response is treated
+  // as unavailable. Webpage-level restrictions still apply.
+  if (
+    result.status === "forbidden" ||
+    result.status === "missing"
+  ) {
+    return {
+      rules: [],
+      sitemaps: [],
+      allowedToContinue: true,
+      diagnostic: `robots_unavailable_${result.httpStatus || "404"}`,
+    };
+  }
+
+  if (result.status === "rate_limited") {
+    return {
+      rules: [],
+      sitemaps: [],
+      allowedToContinue: false,
+      diagnostic: "robots_rate_limited",
+    };
+  }
+
+  if (result.status === "unreachable") {
+    return {
+      rules: [],
+      sitemaps: [],
+      allowedToContinue: false,
+      diagnostic: "robots_unreachable_after_retry",
+    };
   }
 
   return {
     rules: [],
     sitemaps: [],
-    blocked: false,
+    allowedToContinue: false,
+    diagnostic: "robots_error",
   };
 }
 
@@ -642,23 +748,26 @@ function decodeHtml(value: string): string {
     .replace(/&#64;/g, "@")
     .replace(/&#x40;/gi, "@")
     .replace(/&period;/gi, ".")
-    .replace(/&#46;/g, ".")
+    .replace(/&#46;/gi, ".")
     .replace(/&#x2e;/gi, ".")
     .replace(/&amp;/gi, "&")
     .replace(/&nbsp;/gi, " ")
-    .replace(/&#(x[0-9a-f]+|\d+);/gi, (_, code) => {
-      const number = code.toLowerCase().startsWith("x")
-        ? parseInt(code.slice(1), 16)
-        : parseInt(code, 10);
+    .replace(
+      /&#(x[0-9a-f]+|\d+);/gi,
+      (_, code: string) => {
+        const number = code.toLowerCase().startsWith("x")
+          ? parseInt(code.slice(1), 16)
+          : parseInt(code, 10);
 
-      try {
-        return Number.isFinite(number)
-          ? String.fromCodePoint(number)
-          : "";
-      } catch {
-        return "";
-      }
-    });
+        try {
+          return Number.isFinite(number)
+            ? String.fromCodePoint(number)
+            : "";
+        } catch {
+          return "";
+        }
+      },
+    );
 }
 
 function isValidBusinessEmail(value: string): boolean {
@@ -675,8 +784,6 @@ function isValidBusinessEmail(value: string): boolean {
     !domain ||
     local.startsWith(".") ||
     local.endsWith(".") ||
-    local.startsWith("-") ||
-    local.endsWith("-") ||
     local.includes("..") ||
     domain.startsWith(".") ||
     domain.endsWith(".") ||
@@ -685,24 +792,19 @@ function isValidBusinessEmail(value: string): boolean {
     return false;
   }
 
-  if (!VALID_TLDS.has(tld)) return false;
-
+  if (!/^[a-z]{2,24}$/i.test(tld)) return false;
+  if (IMAGE_EXTENSIONS.has(tld)) return false;
   if (PLACEHOLDER_DOMAINS.has(domain)) return false;
-
   if (PLACEHOLDER_NAMES.has(local)) return false;
 
   if (
-    /^(no[._-]?reply|do[._-]?not[._-]?reply|noreply)$/i.test(
-      local,
-    )
+    /^(no[._-]?reply|do[._-]?not[._-]?reply|noreply)$/i.test(local)
   ) {
     return false;
   }
 
   if (
-    /^(gemini_generated_image|logo|image|thumbnail|icon)[_.-]/i.test(
-      local,
-    )
+    /^(gemini_generated_image|logo|thumbnail|icon)[_.-]/i.test(local)
   ) {
     return false;
   }
@@ -713,15 +815,12 @@ function isValidBusinessEmail(value: string): boolean {
 function extractEmails(html: string): string[] {
   const decoded = decodeHtml(html);
 
-  // Preserve JSON-LD before removing scripts.
   const jsonLdBlocks = [
     ...decoded.matchAll(
       /<script\b[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi,
     ),
   ].map((match) => match[1]);
 
-  // Remove styles, image elements, scripts and comments
-  // to avoid treating image filenames as email addresses.
   const visible = decoded
     .replace(/<!--[\s\S]*?-->/g, " ")
     .replace(/<img\b[^>]*>/gi, " ")
@@ -745,12 +844,11 @@ function extractEmails(html: string): string[] {
     }
   });
 
-  // Common publicly visible email obfuscations.
   const atPattern =
     String.raw`(?:\[at\]|\(at\)|\{at\}|\bat\b|\[arroba\]|\(arroba\)|\barroba\b)`;
 
   const dotPattern =
-    String.raw`(?:\[dot\]|\(dot\)|\bdot\b|\[punto\]|\(punto\)|\bpunto\b)`;
+    String.raw`(?:\[dot\]|\(dot\)|\{dot\}|\bdot\b|\[punto\]|\(punto\)|\bpunto\b)`;
 
   const obfuscatedPattern = new RegExp(
     String.raw`([a-zA-Z0-9._%+-]+)\s*${atPattern}\s*([a-zA-Z0-9.-]+)\s*${dotPattern}\s*([a-zA-Z]{2,24})`,
@@ -764,9 +862,11 @@ function extractEmails(html: string): string[] {
   );
 
   const structured =
-    jsonLdBlocks.join(" ").match(
-      /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,24}\b/g,
-    ) || [];
+    jsonLdBlocks
+      .join(" ")
+      .match(
+        /[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,24}\b/g,
+      ) || [];
 
   return [
     ...new Set(
@@ -778,7 +878,7 @@ function extractEmails(html: string): string[] {
 }
 
 // --------------------------------------------
-// COUNTRY AND LANGUAGE
+// COUNTRY AND LANGUAGE DETECTION
 // --------------------------------------------
 
 function detectCountry(
@@ -812,7 +912,9 @@ function detectLanguage(html: string): string {
     );
 
   if (match?.[1]) {
-    const code = match[1].split(/[-_]/)[0].toLowerCase();
+    const code = match[1]
+      .split(/[-_]/)[0]
+      .toLowerCase();
 
     return LANGUAGES[code] || "Unknown";
   }
@@ -821,7 +923,7 @@ function detectLanguage(html: string): string {
 }
 
 // --------------------------------------------
-// CONTACT LINKS
+// CONTACT LINK DISCOVERY
 // --------------------------------------------
 
 function findContactLinks(
@@ -897,7 +999,10 @@ async function discoverSitemapPages(
 
         return (
           sameSiteHost(url.hostname, hostname) &&
-          robotsAllows(url.pathname, rules)
+          robotsAllows(
+            url.pathname + url.search,
+            rules,
+          )
         );
       } catch {
         return false;
@@ -924,9 +1029,7 @@ async function discoverSitemapPages(
       try {
         const url = new URL(location);
 
-        if (!sameSiteHost(url.hostname, hostname)) {
-          continue;
-        }
+        if (!sameSiteHost(url.hostname, hostname)) continue;
 
         if (
           /\.xml$/i.test(url.pathname) ||
@@ -938,7 +1041,10 @@ async function discoverSitemapPages(
 
         if (
           !RELEVANT_PATH.test(url.pathname) ||
-          !robotsAllows(url.pathname, rules)
+          !robotsAllows(
+            url.pathname + url.search,
+            rules,
+          )
         ) {
           continue;
         }
@@ -946,7 +1052,7 @@ async function discoverSitemapPages(
         url.hash = "";
         pages.add(url.toString());
       } catch {
-        // Ignore invalid entries.
+        // Ignore invalid sitemap entries.
       }
     }
   }
@@ -957,14 +1063,7 @@ async function discoverSitemapPages(
     }
   }
 
-  const nested = [...nestedSitemaps]
-    .sort((a, b) => {
-      const aScore = /(pages|blog|index)/i.test(a) ? 1 : 0;
-      const bScore = /(pages|blog|index)/i.test(b) ? 1 : 0;
-
-      return bScore - aScore;
-    })
-    .slice(0, 2);
+  const nested = [...nestedSitemaps].slice(0, 2);
 
   const nestedResults = await Promise.all(
     nested.map((url) =>
@@ -985,9 +1084,18 @@ async function discoverSitemapPages(
 
   return [...pages].sort((a, b) => {
     const score = (url: string) => {
-      if (/(contact|contacto|kontakt|contatti|contato)/i.test(url)) return 3;
-      if (/(about|sobre|nosotros|company|empresa)/i.test(url)) return 2;
-      if (/(privacy|legal|impressum|imprint)/i.test(url)) return 1;
+      if (/contact|contacto|kontakt|contatti|contato/i.test(url)) {
+        return 3;
+      }
+
+      if (/about|sobre|nosotros|company|empresa/i.test(url)) {
+        return 2;
+      }
+
+      if (/privacy|legal|impressum|imprint/i.test(url)) {
+        return 1;
+      }
+
       return 0;
     };
 
@@ -996,7 +1104,7 @@ async function discoverSitemapPages(
 }
 
 // --------------------------------------------
-// LIMITED PAGE CONCURRENCY
+// CONTROLLED CONCURRENCY
 // --------------------------------------------
 
 async function mapLimit<T, R>(
@@ -1039,6 +1147,7 @@ async function scanWebsite(site: string): Promise<Outcome> {
       results: [],
       status: "error",
       hostname: site,
+      reason: "invalid_url",
     };
   }
 
@@ -1052,37 +1161,63 @@ async function scanWebsite(site: string): Promise<Outcome> {
       results: [],
       status: "error",
       hostname,
+      reason: "host_not_public_or_dns_failed",
     };
   }
 
-  // Check the homepage and robots file together.
-  const [homepage, robots] = await Promise.all([
+  const robots = await fetchRobots(
+    origin,
+    hostname,
+    isSafeHost,
+  );
+
+  if (!robots.allowedToContinue) {
+    return {
+      results: [],
+      status: "blocked",
+      hostname,
+      reason: robots.diagnostic,
+    };
+  }
+
+  const homepagePath =
+    base.pathname + base.search || "/";
+
+  if (!robotsAllows(homepagePath, robots.rules)) {
+    return {
+      results: [],
+      status: "blocked",
+      hostname,
+      reason: "homepage_disallowed_by_robots",
+    };
+  }
+
+  const [homepage, sitemapPages] = await Promise.all([
     fetchPublicText(
       base.toString(),
       hostname,
       MAX_HTML_SIZE,
       isSafeHost,
     ),
-    fetchRobots(
+
+    discoverSitemapPages(
       origin,
       hostname,
+      robots.sitemaps,
+      robots.rules,
       isSafeHost,
     ),
   ]);
 
-  if (homepage.status === "blocked") {
+  if (
+    homepage.status === "rate_limited" ||
+    homepage.status === "unreachable"
+  ) {
     return {
       results: [],
       status: "blocked",
       hostname,
-    };
-  }
-
-  if (robots.blocked) {
-    return {
-      results: [],
-      status: "blocked",
-      hostname,
+      reason: `homepage_${homepage.status}`,
     };
   }
 
@@ -1092,15 +1227,6 @@ async function scanWebsite(site: string): Promise<Outcome> {
   const homeLinks = homepageHtml
     ? findContactLinks(homepageHtml, base.toString())
     : [];
-
-  // Search sitemap and homepage links together.
-  const sitemapPages = await discoverSitemapPages(
-    origin,
-    hostname,
-    robots.sitemaps,
-    robots.rules,
-    isSafeHost,
-  );
 
   const extension =
     hostname.split(".").pop()?.toLowerCase() || "";
@@ -1114,36 +1240,17 @@ async function scanWebsite(site: string): Promise<Outcome> {
       "/atencion-al-cliente",
       "/ayuda",
     ],
-    de: [
-      "/kontakt",
-      "/impressum",
-      "/pages/impressum",
-    ],
-    fr: [
-      "/contactez-nous",
-      "/nous-contacter",
-      "/mentions-legales",
-    ],
-    it: [
-      "/contatti",
-      "/chi-siamo",
-    ],
-    pt: [
-      "/contato",
-      "/sobre-nos",
-    ],
-    nl: [
-      "/over-ons",
-    ],
+    de: ["/kontakt", "/impressum", "/pages/impressum"],
+    fr: ["/contactez-nous", "/nous-contacter", "/mentions-legales"],
+    it: ["/contatti", "/chi-siamo"],
+    pt: ["/contato", "/sobre-nos"],
+    nl: ["/over-ons"],
   };
 
   const localizedUrls = (
     localizedPaths[extension] || []
-  ).map((path) =>
-    new URL(path, origin).toString(),
-  );
+  ).map((path) => new URL(path, origin).toString());
 
-  // Prioritize real links and sitemap discoveries.
   const allCandidates = [
     ...homeLinks,
     ...sitemapPages,
@@ -1153,30 +1260,30 @@ async function scanWebsite(site: string): Promise<Outcome> {
     ),
   ];
 
-  const candidates = [
-    ...new Set(allCandidates),
-  ].filter((item) => {
-    try {
-      const url = new URL(item);
+  const candidates = [...new Set(allCandidates)].filter(
+    (item) => {
+      try {
+        const url = new URL(item);
 
-      return (
-        url.origin === origin &&
-        item !== base.toString() &&
-        robotsAllows(url.pathname, robots.rules)
-      );
-    } catch {
-      return false;
-    }
-  });
+        return (
+          url.origin === origin &&
+          item !== base.toString() &&
+          robotsAllows(
+            url.pathname + url.search,
+            robots.rules,
+          )
+        );
+      } catch {
+        return false;
+      }
+    },
+  );
 
-  // Do not stop merely because the homepage has an email.
-  // Other pages may contain another legitimate business contact.
   const selectedPages = candidates.slice(
     0,
     MAX_CONTACT_PAGES,
   );
 
-  // Crawl up to four pages at once for each website.
   const pageResults = await mapLimit(
     selectedPages,
     PAGE_CONCURRENCY,
@@ -1201,11 +1308,11 @@ async function scanWebsite(site: string): Promise<Outcome> {
     });
   }
 
-  for (const result of pageResults) {
-    if (result.status === "ok") {
+  for (const page of pageResults) {
+    if (page.status === "ok") {
       successfulPages.push({
-        text: result.text,
-        url: result.url,
+        text: page.text,
+        url: page.url,
       });
     }
   }
@@ -1214,11 +1321,7 @@ async function scanWebsite(site: string): Promise<Outcome> {
     .map((page) => page.text)
     .join(" ");
 
-  const country = detectCountry(
-    hostname,
-    combinedHtml,
-  );
-
+  const country = detectCountry(hostname, combinedHtml);
   const language = detectLanguage(
     homepageHtml || combinedHtml,
   );
@@ -1243,26 +1346,54 @@ async function scanWebsite(site: string): Promise<Outcome> {
 
   const found = [...results.values()];
 
-  const anyBlocked = pageResults.some(
-    (page) => page.status === "blocked",
-  );
+  // Count failures by actual type, rather than treating
+  // every failed contact URL as a blocked website.
+  const forbiddenPages = pageResults.filter(
+    (page) => page.status === "forbidden",
+  ).length;
+
+  const rateLimitedPages = pageResults.filter(
+    (page) => page.status === "rate_limited",
+  ).length;
+
+  const unreachablePages = pageResults.filter(
+    (page) => page.status === "unreachable",
+  ).length;
 
   let status: Status;
+  let reason: string | undefined;
 
   if (found.length > 0) {
     status = "success";
-  } else if (anyBlocked) {
-    status = "blocked";
-  } else if (successfulPages.length === 0) {
-    status = "error";
-  } else {
+  } else if (successfulPages.length > 0) {
+    // At least one page was accessible. Failed alternative
+    // contact URLs do not make the entire website blocked.
     status = "no_email";
+  } else if (homepage.status === "forbidden") {
+    status = "blocked";
+    reason = "homepage_forbidden";
+  } else if (rateLimitedPages > 0) {
+    status = "blocked";
+    reason = "contact_pages_rate_limited";
+  } else if (forbiddenPages > 0) {
+    status = "blocked";
+    reason = "contact_pages_forbidden";
+  } else if (unreachablePages > 0) {
+    status = "blocked";
+    reason = "contact_pages_unreachable";
+  } else if (homepage.status === "missing") {
+    status = "no_email";
+    reason = "homepage_missing";
+  } else {
+    status = "error";
+    reason = `homepage_${homepage.status}`;
   }
 
   return {
     results: found,
     status,
     hostname,
+    reason,
   };
 }
 
@@ -1313,6 +1444,11 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  // Shared cancellation state for the stream and workers.
+  const streamState = {
+    cancelled: false,
+  };
+
   const stream = new ReadableStream({
     async start(controller) {
       const encoder = new TextEncoder();
@@ -1326,15 +1462,25 @@ export async function POST(request: NextRequest) {
       let emailsFound = 0;
 
       const seenEmails = new Set<string>();
+      const diagnosticCounts: Record<string, number> = {};
 
       function send(event: Record<string, unknown>) {
-        controller.enqueue(
-          encoder.encode(JSON.stringify(event) + "\n"),
-        );
+        if (streamState.cancelled) return;
+
+        try {
+          controller.enqueue(
+            encoder.encode(JSON.stringify(event) + "\n"),
+          );
+        } catch {
+          // The browser may have cancelled or closed the stream.
+          streamState.cancelled = true;
+        }
       }
 
       function sendUniqueResults(results: Result[]) {
         for (const result of results) {
+          if (streamState.cancelled) return;
+
           const email = result.email.toLowerCase();
 
           if (seenEmails.has(email)) continue;
@@ -1369,12 +1515,10 @@ export async function POST(request: NextRequest) {
       });
 
       async function worker() {
-        while (true) {
+        while (!streamState.cancelled) {
           const index = nextIndex++;
 
-          if (index >= domains.length) {
-            return;
-          }
+          if (index >= domains.length) return;
 
           const domain = domains[index];
           let outcome: Outcome;
@@ -1394,8 +1538,12 @@ export async function POST(request: NextRequest) {
               results: [],
               status: "error",
               hostname: domain,
+              reason: "unexpected_scan_error",
             };
           }
+
+          // Do not enqueue new data after client cancellation.
+          if (streamState.cancelled) return;
 
           processed++;
 
@@ -1407,6 +1555,11 @@ export async function POST(request: NextRequest) {
             noEmail++;
           } else {
             errors++;
+          }
+
+          if (outcome.reason) {
+            diagnosticCounts[outcome.reason] =
+              (diagnosticCounts[outcome.reason] || 0) + 1;
           }
 
           sendUniqueResults(outcome.results);
@@ -1427,15 +1580,28 @@ export async function POST(request: NextRequest) {
 
         await Promise.all(workers);
 
-        send({
-          type: "done",
+        console.info("[Scoutool] Scan diagnostics", {
           processed,
-          successful,
-          errors,
-          blocked,
-          noEmail,
           emailsFound,
+          successful,
+          blocked,
+          errors,
+          noEmail,
+          reasons: diagnosticCounts,
+          cancelled: streamState.cancelled,
         });
+
+        if (!streamState.cancelled) {
+          send({
+            type: "done",
+            processed,
+            successful,
+            errors,
+            blocked,
+            noEmail,
+            emailsFound,
+          });
+        }
       } catch (error) {
         console.error(
           "[Scoutool] Scan interrupted:",
@@ -1449,8 +1615,20 @@ export async function POST(request: NextRequest) {
           message: "The scanning process was interrupted.",
         });
       } finally {
-        controller.close();
+        // Close only when the client has not already cancelled.
+        if (!streamState.cancelled) {
+          try {
+            controller.close();
+          } catch {
+            streamState.cancelled = true;
+          }
+        }
       }
+    },
+
+    // Called when the browser or client cancels the response.
+    cancel() {
+      streamState.cancelled = true;
     },
   });
 
