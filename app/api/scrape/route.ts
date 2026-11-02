@@ -6,7 +6,7 @@ export const maxDuration = 300;
 
 // Scanner settings
 const MAX_DOMAINS = 1000;
-const SITE_CONCURRENCY = 8;
+const SITE_CONCURRENCY = 4;
 const PAGE_CONCURRENCY = 4;
 const MAX_CONTACT_PAGES = 10;
 const REQUEST_TIMEOUT = 9000;
