@@ -9,17 +9,72 @@ const RATE_LIMIT_WINDOW = "15 m";
 
 let rateLimiter: Ratelimit | undefined;
 
+function normalizeRedisUrl(raw: string): string {
+  let value = raw.trim();
+
+  // Remove surrounding quotation marks or backticks.
+  for (let i = 0; i < 3; i++) {
+    const first = value[0];
+    const last = value[value.length - 1];
+
+    if (
+      (first === '"' && last === '"') ||
+      (first === "'" && last === "'") ||
+      (first === "`" && last === "`")
+    ) {
+      value = value.slice(1, -1).trim();
+    } else {
+      break;
+    }
+  }
+
+  // Convert a Markdown link into its actual HTTPS destination.
+  const markdownLink = value.match(
+    /^\[([^\]]+)\]\((https:\/\/[^)]+)\)$/i
+  );
+
+  if (markdownLink) {
+    value = markdownLink[2].trim();
+  }
+
+  // Remove optional angle brackets.
+  if (value.startsWith("<") && value.endsWith(">")) {
+    value = value.slice(1, -1).trim();
+  }
+
+  const parsed = new URL(value);
+
+  if (
+    parsed.protocol !== "https:" ||
+    !parsed.hostname.toLowerCase().endsWith(".upstash.io") ||
+    parsed.username ||
+    parsed.password ||
+    parsed.search ||
+    parsed.hash ||
+    (parsed.port !== "" && parsed.port !== "443") ||
+    parsed.pathname !== "/"
+  ) {
+    throw new Error(
+      "Invalid Upstash REST URL. Check the Vercel environment variable."
+    );
+  }
+
+  return parsed.origin;
+}
+
 function getRateLimiter(): Ratelimit {
   if (rateLimiter) {
     return rateLimiter;
   }
 
-  const url = process.env.UPSTASH_REDIS_REST_URL;
+  const rawUrl = process.env.UPSTASH_REDIS_REST_URL;
   const token = process.env.UPSTASH_REDIS_REST_TOKEN;
 
-  if (!url || !token) {
+  if (!rawUrl || !token) {
     throw new Error("Upstash Redis credentials are missing.");
   }
+
+  const url = normalizeRedisUrl(rawUrl);
 
   rateLimiter = new Ratelimit({
     redis: new Redis({ url, token }),
@@ -52,7 +107,6 @@ function getClientIdentifier(request: NextRequest): string {
 }
 
 export async function proxy(request: NextRequest) {
-  // Only rate-limit POST requests to the scanning API.
   if (
     request.nextUrl.pathname !== "/api/scrape" ||
     request.method !== "POST"
@@ -62,11 +116,11 @@ export async function proxy(request: NextRequest) {
 
   try {
     const limiter = getRateLimiter();
-    const identifier = getClientIdentifier(request);
 
-    const result = await limiter.limit(identifier);
+    const result = await limiter.limit(
+      getClientIdentifier(request)
+    );
 
-    // Fail closed if Redis times out.
     if (result.reason === "timeout") {
       return NextResponse.json(
         {
@@ -77,7 +131,6 @@ export async function proxy(request: NextRequest) {
       );
     }
 
-    // Reject requests that exceed the scan limit.
     if (!result.success) {
       const retryAfter = Math.max(
         1,
