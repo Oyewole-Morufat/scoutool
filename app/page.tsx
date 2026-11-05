@@ -581,7 +581,10 @@ type EmailDraft = {
   store: string;
   subject: string;
   body: string;
+  language: string;
   sent: boolean;
+  sending?: boolean;
+  failed?: boolean;
 };
 
 function EmailSender({ onBack }: { onBack: () => void }) {
@@ -596,13 +599,14 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   const [intervalSeconds, setIntervalSeconds] = useState(5);
   const [autoSending, setAutoSending] = useState(false);
   const fileInput = useRef<HTMLInputElement>(null);
-  const autoSendTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const autoSendTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nextDraftIndex = useRef(0);
+  const autoSendingRef = useRef(false);
 
   useEffect(() => {
     return () => {
       if (autoSendTimer.current) {
-        clearInterval(autoSendTimer.current);
+        clearTimeout(autoSendTimer.current);
       }
     };
   }, []);
@@ -611,11 +615,63 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   const urlList = storeUrls.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
   const readyCount = Math.min(emailList.length, urlList.length);
 
+  const translations: Record<string, { name: string; subject: string; body: string }> = {
+    French: {
+      name: "French",
+      subject: "Collaboration avec {store}",
+      body: "Bonjour {store}, j'aime beaucoup votre site et j'aimerais collaborer avec vous.",
+    },
+    German: {
+      name: "German",
+      subject: "Zusammenarbeit mit {store}",
+      body: "Hallo {store}, ich mag Ihre Website sehr und würde gerne mit Ihnen zusammenarbeiten.",
+    },
+    Spanish: {
+      name: "Spanish",
+      subject: "Colaboración con {store}",
+      body: "Hola {store}, me encanta su sitio web y me gustaría colaborar con ustedes.",
+    },
+    Italian: {
+      name: "Italian",
+      subject: "Collaborazione con {store}",
+      body: "Ciao {store}, mi piace molto il vostro sito e mi piacerebbe collaborare con voi.",
+    },
+    Portuguese: {
+      name: "Portuguese",
+      subject: "Colaboração com {store}",
+      body: "Olá {store}, gosto muito do seu site e gostaria de colaborar com vocês.",
+    },
+  };
+
+  function getLanguage(url: string) {
+    const hostname = getStoreName(url).toLowerCase();
+    const tld = hostname.split(".").pop();
+    const byTld: Record<string, keyof typeof translations> = {
+      fr: "French",
+      de: "German",
+      es: "Spanish",
+      it: "Italian",
+      pt: "Portuguese",
+    };
+    return byTld[tld || ""] || "English";
+  }
+
+  function getTranslatedContent(store: string, url: string) {
+    const language = getLanguage(url);
+    const translation = translations[language];
+    return {
+      language,
+      subject: (translation?.subject || subject).replace(/\{store\}/gi, store),
+      body: (translation?.body || body).replace(/\{store\}/gi, store),
+    };
+  }
+
   function stopAutoSend() {
     if (autoSendTimer.current) {
       clearInterval(autoSendTimer.current);
       autoSendTimer.current = null;
     }
+    autoSendingRef.current = false;
     setAutoSending(false);
   }
 
@@ -652,12 +708,14 @@ function EmailSender({ onBack }: { onBack: () => void }) {
     nextDraftIndex.current = 0;
     setDrafts(emailList.slice(0, count).map((email, index) => {
       const store = getStoreName(urlList[index]);
+      const translated = getTranslatedContent(store, urlList[index]);
       return {
         email,
         storeUrl: urlList[index],
         store,
-        subject: subject.replace(/\{store\}/gi, store),
-        body: body.replace(/\{store\}/gi, store),
+        subject: translated.subject,
+        body: translated.body,
+        language: translated.language,
         sent: false,
       };
     }));
@@ -701,16 +759,67 @@ function EmailSender({ onBack }: { onBack: () => void }) {
     ));
   }
 
+  async function sendDraft(index: number) {
+    const draft = drafts[index];
+    if (!draft || draft.sent || draft.sending) return false;
+
+    setDrafts((current) => current.map((item, itemIndex) =>
+      itemIndex === index ? { ...item, sending: true, failed: false } : item
+    ));
+
+    try {
+      const response = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ to: draft.email, subject: draft.subject, text: draft.body }),
+      });
+      if (!response.ok) {
+        const result = (await response.json().catch(() => ({}))) as { error?: string };
+        throw new Error(result.error || "The email could not be sent.");
+      }
+      setDrafts((current) => current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, sent: true, sending: false } : item
+      ));
+      return true;
+    } catch (error) {
+      setDrafts((current) => current.map((item, itemIndex) =>
+        itemIndex === index ? { ...item, sending: false, failed: true } : item
+      ));
+      setNotice(error instanceof Error ? error.message : "The email could not be sent.");
+      return false;
+    }
+  }
+
+  function scheduleNextAutoSend() {
+    if (!autoSendingRef.current) return;
+    const nextIndex = nextDraftIndex.current;
+    if (nextIndex >= drafts.length) {
+      stopAutoSend();
+      setNotice("All emails have been sent.");
+      return;
+    }
+    nextDraftIndex.current += 1;
+    void sendDraft(nextIndex).finally(() => {
+      if (nextDraftIndex.current < drafts.length && autoSendingRef.current) {
+        autoSendTimer.current = setTimeout(scheduleNextAutoSend, intervalSeconds * 1000);
+      } else if (nextDraftIndex.current >= drafts.length) {
+        stopAutoSend();
+        setNotice("All emails have been sent.");
+      }
+    });
+  }
+
   function startAutoSend() {
     if (drafts.length === 0) {
       setNotice("Generate emails before starting auto-send.");
       return;
     }
     if (autoSending) return;
+    autoSendingRef.current = true;
     setAutoSending(true);
-    setNotice("Auto-send started. Each link will open in a new tab.");
-    openNextDraft();
-    autoSendTimer.current = setInterval(openNextDraft, intervalSeconds * 1000);
+    nextDraftIndex.current = drafts.findIndex((draft) => !draft.sent);
+    setNotice("Auto-send started. Emails are being sent in the background.");
+    scheduleNextAutoSend();
   }
 
   function exportCSV() {
@@ -817,20 +926,21 @@ function EmailSender({ onBack }: { onBack: () => void }) {
           </div>
         </section>
 
-        {drafts.length > 0 && (
-          <section className="mt-6 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
+        <section className="mt-6 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
             <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 p-5">
-              <div><h2 className="font-semibold">{drafts.length} generated emails</h2><p className="mt-1 text-sm text-slate-400">{drafts.filter((draft) => !draft.sent).length} unsent · opens each link automatically</p></div>
+              <div><h2 className="font-semibold">Auto-send</h2><p className="mt-1 text-sm text-slate-400">{drafts.length ? `${drafts.filter((draft) => !draft.sent).length} unsent · sends directly without opening tabs` : "Generate emails or import a CSV to begin"}</p></div>
               <div className="flex flex-wrap items-center gap-2">
                 <label className="text-sm text-slate-400">Every <input type="number" min={1} value={intervalSeconds} onChange={(event) => setIntervalSeconds(Math.max(1, Number(event.target.value) || 1))} className="ml-1 w-16 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-center text-white" /> sec</label>
-                <button type="button" onClick={autoSending ? stopAutoSend : startAutoSend} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500">{autoSending ? "Stop" : "Start"}</button>
-                <button type="button" onClick={exportCSV} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">CSV</button>
+                <button type="button" onClick={autoSending ? stopAutoSend : startAutoSend} disabled={drafts.length === 0} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40">{autoSending ? "Stop" : "Start"}</button>
+                <button type="button" onClick={exportCSV} disabled={drafts.length === 0} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">CSV</button>
               </div>
             </div>
             <div className="divide-y divide-slate-800">
-              {drafts.map((draft, index) => (
+              {drafts.length === 0 ? (
+                <p className="p-8 text-center text-sm text-slate-500">Auto-send is ready. Add emails and store URLs above, then click Generate.</p>
+              ) : drafts.map((draft, index) => (
                 <div key={`${draft.email}-${index}`} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0"><p className="font-medium text-white">{draft.email}</p><p className="mt-1 truncate text-sm text-slate-400">Subject: {draft.subject}</p></div>
+                  <div className="min-w-0"><p className="font-medium text-white">{draft.email} <span className="ml-2 text-xs text-slate-500">{draft.language}</span></p><p className="mt-1 truncate text-sm text-slate-400">Subject: {draft.subject}</p>{draft.failed && <p className="mt-1 text-xs text-red-400">Send failed</p>}</div>
                   <div className="flex shrink-0 gap-2">
                     <button type="button" onClick={() => openGmail(draft)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Open Gmail</button>
                     <button type="button" onClick={() => copyLink(draft)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Copy link</button>
@@ -839,7 +949,6 @@ function EmailSender({ onBack }: { onBack: () => void }) {
               ))}
             </div>
           </section>
-        )}
         {notice && <p role="status" className="mt-4 text-center text-sm text-slate-400">{notice}</p>}
       </div>
     </main>
