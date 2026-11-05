@@ -457,7 +457,7 @@ export default function Home() {
             title="Emails Found"
             value={results.length}
             description="Unique email results"
-            color="text-emerald-400"
+            color="text-green-300"
           />
           <StatCard
             title="Websites Processed"
@@ -501,10 +501,10 @@ export default function Home() {
           {results.length === 0 ? (
             <div className="px-5 py-16 text-center">
               <div className="mb-3 text-3xl">📧</div>
-              <h3 className="font-medium text-slate-300">
+              <h3 className="font-medium text-green-100/80">
                 No email addresses found yet
               </h3>
-              <p className="mt-2 text-sm text-slate-500">
+              <p className="mt-2 text-sm text-green-100/45">
                 Start a scan to see discovered email addresses here.
               </p>
             </div>
@@ -514,7 +514,7 @@ export default function Home() {
                 <caption className="sr-only">
                   Email addresses discovered by Scoutool
                 </caption>
-                <thead className="bg-slate-950/70 text-xs uppercase tracking-wider text-slate-400">
+                <thead className="bg-green-950/45 text-xs uppercase tracking-wider text-green-100/55">
                   <tr>
                     <th scope="col" className="px-5 py-4">Email</th>
                     <th scope="col" className="px-5 py-4">Website</th>
@@ -526,15 +526,15 @@ export default function Home() {
                   {results.map((result, index) => (
                     <tr
                       key={`${result.email}-${result.site}-${index}`}
-                      className="transition hover:bg-slate-800/40"
+                      className="transition hover:bg-green-300/5"
                     >
-                      <td className="px-5 py-4 font-medium text-emerald-400">
+                      <td className="px-5 py-4 font-medium text-green-300">
                         {result.email}
                       </td>
-                      <td className="px-5 py-4 text-slate-300">
+                      <td className="px-5 py-4 text-green-100/75">
                         {result.site}
                       </td>
-                      <td className="px-5 py-4 text-slate-400">
+                      <td className="px-5 py-4 text-green-100/55">
                         {result.path || "—"}
                       </td>
                     </tr>
@@ -545,7 +545,7 @@ export default function Home() {
           )}
         </section>
 
-        <footer className="mt-8 text-center text-xs text-slate-600">
+        <footer className="mt-8 text-center text-xs text-green-100/35">
           Scoutool · Website email discovery
         </footer>
       </div>
@@ -565,12 +565,12 @@ function StatCard({
   color: string;
 }) {
   return (
-    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
-      <p className="text-sm text-slate-400">{title}</p>
+    <div className="app-panel rounded-2xl border p-5">
+      <p className="text-sm text-green-100/60">{title}</p>
       <p className={`mt-3 text-3xl font-bold tabular-nums ${color}`}>
         {value.toLocaleString()}
       </p>
-      <p className="mt-2 text-xs text-slate-500">{description}</p>
+      <p className="mt-2 text-xs text-green-100/40">{description}</p>
     </div>
   );
 }
@@ -1017,29 +1017,29 @@ function EmailSender({ onBack }: { onBack: () => void }) {
             </div>
             <div className="divide-y divide-green-200/10">
               {drafts.length === 0 ? (
-                <p className="p-8 text-center text-sm text-slate-500">Auto-send is ready. Add emails and store URLs above, then click Generate.</p>
+                <p className="p-8 text-center text-sm text-green-100/45">Auto-send is ready. Add emails and store URLs above, then click Generate.</p>
               ) : filteredDrafts.length === 0 ? (
-                <p className="p-8 text-center text-sm text-slate-500">No emails in this list.</p>
+                <p className="p-8 text-center text-sm text-green-100/45">No emails in this list.</p>
               ) : filteredDrafts.map((draft, index) => (
                 <div key={`${draft.email}-${index}`} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
                   <div className="min-w-0">
                     <p className="font-medium text-white">
-                      <span className={`mr-2 inline-block h-2 w-2 rounded-full ${draft.sent ? "bg-slate-600" : "bg-blue-400"}`} />
-                      {draft.email} <span className="ml-2 text-xs text-slate-500">{draft.language}</span>
+                      <span className={`mr-2 inline-block h-2 w-2 rounded-full ${draft.sent ? "bg-green-950" : "bg-green-300"}`} />
+                      {draft.email} <span className="ml-2 text-xs text-green-100/40">{draft.language}</span>
                     </p>
-                    <p className="mt-1 truncate text-sm text-slate-400">Subject: {draft.subject}</p>
-                    {draft.sent && <p className="mt-1 text-xs text-slate-500">{cooldownLabel(draft.email) || "Sent · locked for two days"}</p>}
+                    <p className="mt-1 truncate text-sm text-green-100/55">Subject: {draft.subject}</p>
+                    {draft.sent && <p className="mt-1 text-xs text-green-100/40">{cooldownLabel(draft.email) || "Sent · locked for two days"}</p>}
                     {draft.failed && <p className="mt-1 text-xs text-red-400">Send failed</p>}
                   </div>
                   <div className="flex shrink-0 gap-2">
-                    <button type="button" onClick={() => openGmail(draft)} disabled={draft.sent || draft.sending} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">{draft.sending ? "Sending..." : draft.sent ? "Sent" : "Open Gmail"}</button>
-                    <button type="button" onClick={() => copyLink(draft)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Copy link</button>
+                    <button type="button" onClick={() => openGmail(draft)} disabled={draft.sent || draft.sending} className="app-button rounded-lg border px-3 py-2 text-sm hover:bg-green-300/10 disabled:cursor-not-allowed disabled:opacity-40">{draft.sending ? "Sending..." : draft.sent ? "Sent" : "Open Gmail"}</button>
+                    <button type="button" onClick={() => copyLink(draft)} className="app-button rounded-lg border px-3 py-2 text-sm hover:bg-green-300/10">Copy link</button>
                   </div>
                 </div>
               ))}
             </div>
           </section>
-        {notice && <p role="status" className="mt-4 text-center text-sm text-slate-400">{notice}</p>}
+        {notice && <p role="status" className="mt-4 text-center text-sm text-green-100/60">{notice}</p>}
       </div>
     </main>
   );
