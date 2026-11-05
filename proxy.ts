@@ -93,7 +93,8 @@ function getRateLimiter(): Ratelimit {
 function getClientIdentifier(request: NextRequest): string {
   const forwardedIp =
     request.headers.get("x-vercel-forwarded-for") ||
-    request.headers.get("x-real-ip");
+    request.headers.get("x-real-ip") ||
+    request.headers.get("x-forwarded-for");
 
   const clientIp =
     forwardedIp?.split(",")[0].trim() || "unknown-client";
@@ -107,9 +108,7 @@ function getClientIdentifier(request: NextRequest): string {
 
 export async function proxy(request: NextRequest) {
   if (
-    !["/api/scrape", "/api/send-email"].includes(
-      request.nextUrl.pathname,
-    ) ||
+    request.nextUrl.pathname !== "/api/scrape" ||
     request.method !== "POST"
   ) {
     return NextResponse.next();
@@ -177,5 +176,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/scrape", "/api/send-email"],
+  matcher: ["/api/scrape"],
 };
