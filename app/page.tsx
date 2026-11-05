@@ -52,7 +52,12 @@ export default function Home() {
     .filter(Boolean);
 
   if (emailMode) {
-    return <EmailSender onBack={() => setEmailMode(false)} />;
+    return (
+      <EmailSender
+        onBack={() => setEmailMode(false)}
+        initialResults={results}
+      />
+    );
   }
 
   const progress =
@@ -597,14 +602,31 @@ type OpenedEmail = {
   openedAt: string;
 };
 
+type EmailActivity = {
+  id: string;
+  recipients: string[];
+  subject: string;
+  status: "pending" | "accepted" | "failed";
+  createdAt: string;
+  error?: string;
+};
+
 const EMAIL_COOLDOWN_KEY = "scoutool-email-cooldowns";
+const EMAIL_ACTIVITY_KEY = "scoutool-email-activity";
+const EMAIL_DRAFT_KEY = "scoutool-email-draft";
 const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
 
 function getEmailCooldownExpiry() {
   return Date.now() + TWO_DAYS_MS;
 }
 
-function EmailSender({ onBack }: { onBack: () => void }) {
+function EmailSender({
+  onBack,
+  initialResults,
+}: {
+  onBack: () => void;
+  initialResults: Result[];
+}) {
   const [emails, setEmails] = useState("");
   const [storeUrls, setStoreUrls] = useState("");
   const [subject, setSubject] = useState("Collaborating with {store}");
@@ -619,6 +641,16 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   const [cooldowns, setCooldowns] = useState<Record<string, number>>({});
   const [emailFilter, setEmailFilter] = useState<EmailFilter>("all");
   const [openedEmails, setOpenedEmails] = useState<OpenedEmail[]>([]);
+  const [selectedEmails, setSelectedEmails] = useState<string[]>([]);
+  const [composerOpen, setComposerOpen] = useState(false);
+  const [cc, setCc] = useState("");
+  const [bcc, setBcc] = useState("");
+  const [composerSubject, setComposerSubject] = useState("");
+  const [composerMessage, setComposerMessage] = useState("");
+  const [previewMode, setPreviewMode] = useState(false);
+  const [activity, setActivity] = useState<EmailActivity[]>([]);
+  const [draftSaved, setDraftSaved] = useState(false);
+  const editorRef = useRef<HTMLDivElement>(null);
   const [now, setNow] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const autoSendTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -626,6 +658,20 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   const autoSendingRef = useRef(false);
   const openedWindows = useRef(new Map<string, Window>());
   const openedEmailId = useRef(0);
+
+  useEffect(() => {
+    if (initialResults.length > 0) {
+      const loadResultsTimer = window.setTimeout(() => {
+        setEmails((current) =>
+          current || initialResults.map((result) => result.email).join("\n")
+        );
+        setStoreUrls((current) =>
+          current || initialResults.map((result) => result.site).join("\n")
+        );
+      }, 0);
+      return () => window.clearTimeout(loadResultsTimer);
+    }
+  }, [initialResults]);
 
   useEffect(() => {
     const loadTimer = window.setTimeout(() => {
@@ -641,6 +687,23 @@ function EmailSender({ onBack }: { onBack: () => void }) {
         }
       } catch {
         setNotice("Saved email cooldowns could not be loaded.");
+      }
+      const savedActivity = window.localStorage.getItem(EMAIL_ACTIVITY_KEY);
+      if (savedActivity) {
+        setActivity(JSON.parse(savedActivity) as EmailActivity[]);
+      }
+      const savedDraft = window.localStorage.getItem(EMAIL_DRAFT_KEY);
+      if (savedDraft) {
+        const draft = JSON.parse(savedDraft) as {
+          cc?: string;
+          bcc?: string;
+          subject?: string;
+          message?: string;
+        };
+        setCc(draft.cc || "");
+        setBcc(draft.bcc || "");
+        setComposerSubject(draft.subject || "");
+        setComposerMessage(draft.message || "");
       }
       setNow(Date.now());
     }, 0);
@@ -668,6 +731,7 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   const emailList = emails.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
   const urlList = storeUrls.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
   const readyCount = Math.min(emailList.length, urlList.length);
+  const resultByEmail = new Map(initialResults.map((result) => [result.email.toLowerCase(), result]));
   const filteredDrafts = drafts.filter((draft) =>
     emailFilter === "all" ||
     (emailFilter === "sent" ? draft.sent : !draft.sent)
@@ -804,6 +868,171 @@ function EmailSender({ onBack }: { onBack: () => void }) {
       };
     }));
     setNotice(`${count} email${count === 1 ? "" : "s"} ready.`);
+  }
+
+  function toggleSelected(email: string) {
+    setSelectedEmails((current) =>
+      current.includes(email)
+        ? current.filter((value) => value !== email)
+        : [...current, email]
+    );
+  }
+
+  function openComposer(recipients: string[] = selectedEmails) {
+    if (recipients.length === 0) {
+      setNotice("Select at least one email first.");
+      return;
+    }
+    setSelectedEmails(recipients);
+    setComposerOpen(true);
+    setPreviewMode(false);
+    if (!composerSubject) setComposerSubject("Following up with {site}");
+    if (!composerMessage) {
+      setComposerMessage(
+        "Hello {email},\n\nI visited {site} ({country}) and wanted to get in touch."
+      );
+    }
+  }
+
+  function replacePlaceholders(value: string, email: string) {
+    const result = resultByEmail.get(email.toLowerCase());
+    const draft = drafts.find((item) => item.email.toLowerCase() === email.toLowerCase());
+    return value
+      .replace(/\{email\}/gi, email)
+      .replace(/\{site\}/gi, result?.site || draft?.storeUrl || "")
+      .replace(/\{country\}/gi, result?.country || "your country");
+  }
+
+  function messageHtml(value: string) {
+    return value
+      .split(/\r?\n/)
+      .map((line) => line || "<br>")
+      .join("<br>");
+  }
+
+  function saveDraft() {
+    window.localStorage.setItem(
+      EMAIL_DRAFT_KEY,
+      JSON.stringify({
+        cc,
+        bcc,
+        subject: composerSubject,
+        message: composerMessage,
+      })
+    );
+    setDraftSaved(true);
+    setNotice("Draft saved on this device.");
+  }
+
+  function discardDraft() {
+    window.localStorage.removeItem(EMAIL_DRAFT_KEY);
+    setCc("");
+    setBcc("");
+    setComposerSubject("");
+    setComposerMessage("");
+    setComposerOpen(false);
+    setDraftSaved(false);
+    setNotice("Draft discarded.");
+  }
+
+  function updateActivity(next: EmailActivity[]) {
+    setActivity(next);
+    window.localStorage.setItem(EMAIL_ACTIVITY_KEY, JSON.stringify(next.slice(0, 100)));
+  }
+
+  async function sendComposedEmail() {
+    const recipients = selectedEmails.filter((email) => !isCoolingDown(email));
+    const parseRecipients = (value: string) =>
+      value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
+    const ccRecipients = parseRecipients(cc);
+    const bccRecipients = parseRecipients(bcc);
+
+    if (recipients.length === 0) {
+      setNotice("Select at least one available recipient.");
+      return;
+    }
+    if (!composerSubject.trim() || !composerMessage.trim()) {
+      setNotice("Subject and message are required.");
+      return;
+    }
+    const invalid = [...recipients, ...ccRecipients, ...bccRecipients].find(
+      (email) => !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)
+    );
+    if (invalid) {
+      setNotice(`Invalid email address: ${invalid}`);
+      return;
+    }
+
+    const messages = recipients.map((email) => {
+      const personalizedSubject = replacePlaceholders(composerSubject, email);
+      const personalizedMessage = replacePlaceholders(composerMessage, email);
+      return {
+        to: email,
+        cc: ccRecipients,
+        bcc: bccRecipients,
+        subject: personalizedSubject,
+        text: personalizedMessage.replace(/<[^>]+>/g, ""),
+        html: messageHtml(personalizedMessage),
+      };
+    });
+    const id = `activity-${Date.now()}`;
+    const createdAt = new Date().toISOString();
+    updateActivity([
+      { id, recipients, subject: composerSubject, status: "pending", createdAt },
+      ...activity,
+    ]);
+
+    try {
+      const response = await fetch("/api/send-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ messages }),
+      });
+      const result = (await response.json().catch(() => ({}))) as {
+        results?: Array<{ to: string; status: "accepted" | "failed"; error?: string }>;
+        error?: string;
+      };
+      if (!response.ok || !result.results) {
+        throw new Error(result.error || "The email provider rejected the message.");
+      }
+      const failed = result.results.filter((item) => item.status === "failed");
+      const accepted = result.results.filter((item) => item.status === "accepted");
+      accepted.forEach((item) => markSent(item.to));
+      setActivity((current) => {
+        const nextActivity = current.map((item) =>
+        item.id === id
+          ? {
+              ...item,
+              status: (failed.length > 0 ? "failed" : "accepted") as EmailActivity["status"],
+              error: failed[0]?.error,
+            }
+          : item
+        );
+        window.localStorage.setItem(EMAIL_ACTIVITY_KEY, JSON.stringify(nextActivity.slice(0, 100)));
+        return nextActivity;
+      });
+      setNotice(
+        failed.length > 0
+          ? `${accepted.length} sent, ${failed.length} failed.`
+          : `${accepted.length} email${accepted.length === 1 ? "" : "s"} accepted for delivery.`
+      );
+      setComposerOpen(false);
+    } catch (error) {
+      setActivity((current) => {
+        const nextActivity = current.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                status: "failed" as const,
+                error: error instanceof Error ? error.message : "Send failed.",
+              }
+            : item
+        );
+        window.localStorage.setItem(EMAIL_ACTIVITY_KEY, JSON.stringify(nextActivity.slice(0, 100)));
+        return nextActivity;
+      });
+      setNotice(error instanceof Error ? error.message : "Email sending failed.");
+    }
   }
 
   function getMailtoLink(draft: EmailDraft) {
@@ -1035,6 +1264,119 @@ function EmailSender({ onBack }: { onBack: () => void }) {
             <span className="text-sm text-green-700">{readyCount}/{Math.max(emailList.length, urlList.length)} ready</span>
             <button type="button" onClick={generateDrafts} className="app-button rounded-xl bg-green-400 px-6 py-3 text-sm font-semibold text-green-950 hover:bg-green-300">Generate</button>
           </div>
+        </section>
+
+        <section className="app-panel mt-6 rounded-2xl border p-5 sm:p-6">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <h2 className="font-semibold">Built-in composer</h2>
+              <p className="mt-1 text-sm text-green-700">
+                Select recipients, personalize with {"{email}"}, {"{site}"}, or {"{country}"}, and send inside Scoutool.
+              </p>
+            </div>
+            <button type="button" onClick={() => openComposer()} disabled={selectedEmails.length === 0} className="app-button rounded-xl bg-green-400 px-5 py-3 text-sm font-semibold text-green-950 disabled:cursor-not-allowed disabled:opacity-40">
+              Compose ({selectedEmails.length})
+            </button>
+          </div>
+          <div className="mt-4 flex max-h-56 flex-col gap-2 overflow-y-auto">
+            {drafts.length === 0 ? (
+              <p className="text-sm text-green-700">Generate your email list above to select recipients.</p>
+            ) : drafts.map((draft) => (
+              <label key={`select-${draft.email}`} className="flex cursor-pointer items-center gap-3 rounded-xl border border-green-200/15 p-3 hover:bg-green-300/10">
+                <input type="checkbox" checked={selectedEmails.includes(draft.email)} onChange={() => toggleSelected(draft.email)} className="h-4 w-4 accent-green-400" />
+                <button type="button" onClick={() => openComposer([draft.email])} className="flex-1 text-left text-sm hover:text-green-300 hover:underline">{draft.email}</button>
+                <button type="button" onClick={(event) => { event.preventDefault(); openComposer([draft.email]); }} className="text-xs text-green-300 hover:underline">Compose</button>
+              </label>
+            ))}
+          </div>
+        </section>
+
+        {composerOpen && (
+          <div className="fixed inset-0 z-40 flex items-end justify-center bg-green-950/60 p-0 backdrop-blur-sm sm:items-center sm:p-6">
+            <section className="app-panel max-h-[95vh] w-full max-w-3xl overflow-y-auto rounded-t-2xl border p-5 shadow-2xl sm:rounded-2xl sm:p-7">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <h2 className="text-xl font-semibold">New email</h2>
+                  <p className="mt-1 text-sm text-green-700">{selectedEmails.length} recipient{selectedEmails.length === 1 ? "" : "s"}</p>
+                </div>
+                <button type="button" onClick={() => setComposerOpen(false)} className="app-button rounded-lg border px-3 py-2 text-sm">Close</button>
+              </div>
+              <div className="mt-5 grid gap-3">
+                <label className="text-sm font-medium">To
+                  <input value={selectedEmails.join(", ")} readOnly className="app-input mt-1 w-full rounded-lg border p-3 text-sm text-green-900" />
+                </label>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="text-sm font-medium">CC
+                    <input value={cc} onChange={(event) => setCc(event.target.value)} placeholder="Optional" className="app-input mt-1 w-full rounded-lg border p-3 text-sm text-green-900" />
+                  </label>
+                  <label className="text-sm font-medium">BCC
+                    <input value={bcc} onChange={(event) => setBcc(event.target.value)} placeholder="Optional" className="app-input mt-1 w-full rounded-lg border p-3 text-sm text-green-900" />
+                  </label>
+                </div>
+                <label className="text-sm font-medium">Subject
+                  <input value={composerSubject} onChange={(event) => setComposerSubject(event.target.value)} maxLength={998} className="app-input mt-1 w-full rounded-lg border p-3 text-sm text-green-900" />
+                </label>
+                <div>
+                  <div className="mb-1 flex flex-wrap items-center justify-between gap-2 text-sm font-medium">
+                    <span>Message</span>
+                    <span className="text-xs font-normal text-green-700">{composerMessage.length.toLocaleString()} characters</span>
+                  </div>
+                  <div className="mb-2 flex gap-2">
+                    <button type="button" onClick={() => document.execCommand("bold")} className="app-button rounded border px-2 py-1 text-xs font-bold">B</button>
+                    <button type="button" onClick={() => document.execCommand("italic")} className="app-button rounded border px-2 py-1 text-xs italic">I</button>
+                    <button type="button" onClick={() => document.execCommand("underline")} className="app-button rounded border px-2 py-1 text-xs underline">U</button>
+                    <span className="text-xs text-green-700">Placeholders: {"{email}"} {"{site}"} {"{country}"}</span>
+                  </div>
+                  <div
+                    ref={editorRef}
+                    contentEditable
+                    suppressContentEditableWarning
+                    onInput={(event) => {
+                      setComposerMessage(event.currentTarget.innerHTML);
+                      setDraftSaved(false);
+                    }}
+                    dangerouslySetInnerHTML={{ __html: messageHtml(composerMessage) }}
+                    className="app-input min-h-44 w-full rounded-lg border p-3 text-sm text-green-900 outline-none focus:border-green-500"
+                  />
+                </div>
+              </div>
+              {previewMode && (
+                <div className="mt-4 rounded-xl border border-green-200/20 bg-white p-4 text-sm text-green-950">
+                  <p className="mb-2 font-semibold">Preview</p>
+                  <p className="mb-2 font-medium">{replacePlaceholders(composerSubject, selectedEmails[0] || "")}</p>
+                  <div dangerouslySetInnerHTML={{ __html: messageHtml(replacePlaceholders(composerMessage, selectedEmails[0] || "")) }} />
+                </div>
+              )}
+              <div className="mt-5 flex flex-wrap justify-end gap-2">
+                <button type="button" onClick={discardDraft} className="app-button rounded-xl border px-4 py-2 text-sm">Discard</button>
+                <button type="button" onClick={saveDraft} className="app-button rounded-xl border px-4 py-2 text-sm">{draftSaved ? "Draft saved" : "Save draft"}</button>
+                <button type="button" onClick={() => setPreviewMode((current) => !current)} className="app-button rounded-xl border px-4 py-2 text-sm">{previewMode ? "Edit" : "Preview"}</button>
+                <button type="button" onClick={sendComposedEmail} className="app-button rounded-xl bg-green-400 px-5 py-2 text-sm font-semibold text-green-950">Send</button>
+              </div>
+            </section>
+          </div>
+        )}
+
+        <section className="app-panel mt-6 overflow-hidden rounded-2xl border">
+          <div className="border-b border-green-200/15 p-5">
+            <h2 className="font-semibold">Email activity</h2>
+            <p className="mt-1 text-sm text-green-700">Accepted, pending, and failed messages from this browser.</p>
+          </div>
+          {activity.length === 0 ? (
+            <p className="p-8 text-center text-sm text-green-700">No email activity yet.</p>
+          ) : (
+            <div className="divide-y divide-green-200/10">
+              {activity.map((item) => (
+                <div key={item.id} className="flex flex-col gap-2 p-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <p className="text-sm font-medium">{item.recipients.join(", ")}</p>
+                    <p className="text-xs text-green-700">{item.subject} · {new Date(item.createdAt).toLocaleString()}</p>
+                  </div>
+                  <span className={`text-xs font-semibold uppercase ${item.status === "accepted" ? "text-green-600" : item.status === "failed" ? "text-red-500" : "text-amber-600"}`}>{item.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
         </section>
 
         <section className="app-panel mt-6 overflow-hidden rounded-2xl border">
