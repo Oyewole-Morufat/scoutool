@@ -107,7 +107,9 @@ function getClientIdentifier(request: NextRequest): string {
 
 export async function proxy(request: NextRequest) {
   if (
-    request.nextUrl.pathname !== "/api/scrape" ||
+    !["/api/scrape", "/api/send-email"].includes(
+      request.nextUrl.pathname,
+    ) ||
     request.method !== "POST"
   ) {
     return NextResponse.next();
@@ -139,7 +141,7 @@ export async function proxy(request: NextRequest) {
       return NextResponse.json(
         {
           error:
-            "You have reached the scan limit. Please wait before starting another scan.",
+            "You have reached the request limit. Please wait before trying again.",
           retryAfterSeconds: retryAfter,
         },
         {
@@ -175,5 +177,5 @@ export async function proxy(request: NextRequest) {
 }
 
 export const config = {
-  matcher: ["/api/scrape"],
+  matcher: ["/api/scrape", "/api/send-email"],
 };

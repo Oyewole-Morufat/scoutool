@@ -668,7 +668,7 @@ function EmailSender({ onBack }: { onBack: () => void }) {
 
   function stopAutoSend() {
     if (autoSendTimer.current) {
-      clearInterval(autoSendTimer.current);
+      clearTimeout(autoSendTimer.current);
       autoSendTimer.current = null;
     }
     autoSendingRef.current = false;
@@ -740,25 +740,6 @@ function EmailSender({ onBack }: { onBack: () => void }) {
     }
   }
 
-  function openNextDraft() {
-    const nextIndex = nextDraftIndex.current;
-    if (nextIndex < 0) {
-      stopAutoSend();
-      setNotice("All email links have been opened.");
-      return;
-    }
-    if (!drafts[nextIndex]) {
-      stopAutoSend();
-      setNotice("All email links have been opened.");
-      return;
-    }
-    window.open(getMailtoLink(drafts[nextIndex]), "_blank");
-    nextDraftIndex.current += 1;
-    setDrafts((current) => current.map((draft, index) =>
-      index === nextIndex ? { ...draft, sent: true } : draft
-    ));
-  }
-
   async function sendDraft(index: number) {
     const draft = drafts[index];
     if (!draft || draft.sent || draft.sending) return false;
@@ -793,9 +774,9 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   function scheduleNextAutoSend() {
     if (!autoSendingRef.current) return;
     const nextIndex = nextDraftIndex.current;
-    if (nextIndex >= drafts.length) {
+    if (nextIndex < 0 || nextIndex >= drafts.length) {
       stopAutoSend();
-      setNotice("All emails have been sent.");
+      setNotice("All emails have already been sent.");
       return;
     }
     nextDraftIndex.current += 1;
