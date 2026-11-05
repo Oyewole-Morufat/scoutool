@@ -29,6 +29,17 @@ The URL must be the HTTPS Upstash REST endpoint. The proxy allows requests
 without Redis credentials during development, but production requests return
 `503` until rate limiting is configured.
 
+To enable direct campaign sending, also configure:
+
+```text
+RESEND_API_KEY=re_...
+RESEND_FROM_EMAIL=verified-sender@example.com
+```
+
+The sender address must be verified with Resend. If these variables are not
+configured, the campaign helper still supports Gmail, mailto links, and CSV
+export, while direct sending remains disabled.
+
 ## Validation
 
 ```text

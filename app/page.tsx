@@ -587,6 +587,8 @@ type EmailDraft = {
   failed?: boolean;
 };
 
+type EmailFilter = "all" | "sent" | "unsent";
+
 function EmailSender({ onBack }: { onBack: () => void }) {
   const [emails, setEmails] = useState("");
   const [storeUrls, setStoreUrls] = useState("");
@@ -598,12 +600,28 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   const [notice, setNotice] = useState("");
   const [intervalSeconds, setIntervalSeconds] = useState(5);
   const [autoSending, setAutoSending] = useState(false);
+  const [cooldowns, setCooldowns] = useState<Record<string, number>>({});
+  const [emailFilter, setEmailFilter] = useState<EmailFilter>("all");
   const fileInput = useRef<HTMLInputElement>(null);
   const autoSendTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nextDraftIndex = useRef(0);
   const autoSendingRef = useRef(false);
 
   useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem("scoutool-email-cooldowns");
+      if (saved) {
+        const parsed = JSON.parse(saved) as Record<string, number>;
+        setCooldowns(
+          Object.fromEntries(
+            Object.entries(parsed).filter(([, expiresAt]) => expiresAt > Date.now())
+          )
+        );
+      }
+    } catch {
+      setNotice("Saved email cooldowns could not be loaded.");
+    }
+
     return () => {
       if (autoSendTimer.current) {
         clearTimeout(autoSendTimer.current);
@@ -611,9 +629,24 @@ function EmailSender({ onBack }: { onBack: () => void }) {
     };
   }, []);
 
+  useEffect(() => {
+    const refreshCooldowns = () => {
+      setDrafts((current) => current.map((draft) => {
+        const stillCooling = isCoolingDown(draft.email);
+        return stillCooling === draft.sent ? draft : { ...draft, sent: stillCooling };
+      }));
+    };
+    const timer = window.setInterval(refreshCooldowns, 60 * 1000);
+    return () => window.clearInterval(timer);
+  }, [cooldowns]);
+
   const emailList = emails.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
   const urlList = storeUrls.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
   const readyCount = Math.min(emailList.length, urlList.length);
+  const filteredDrafts = drafts.filter((draft) =>
+    emailFilter === "all" ||
+    (emailFilter === "sent" ? draft.sent : !draft.sent)
+  );
 
   const translations: Record<string, { name: string; subject: string; body: string }> = {
     French: {
@@ -683,6 +716,32 @@ function EmailSender({ onBack }: { onBack: () => void }) {
     setNotice("");
   }
 
+  function isCoolingDown(email: string) {
+    return (cooldowns[email.trim().toLowerCase()] ?? 0) > Date.now();
+  }
+
+  function markSent(email: string) {
+    const key = email.trim().toLowerCase();
+    const expiresAt = Date.now() + 2 * 24 * 60 * 60 * 1000;
+    setCooldowns((current) => {
+      const next = { ...current, [key]: expiresAt };
+      window.localStorage.setItem("scoutool-email-cooldowns", JSON.stringify(next));
+      return next;
+    });
+    setDrafts((current) => current.map((draft) =>
+      draft.email.trim().toLowerCase() === key
+        ? { ...draft, sent: true, sending: false }
+        : draft
+    ));
+  }
+
+  function cooldownLabel(email: string) {
+    const remaining = Math.max(0, (cooldowns[email.trim().toLowerCase()] ?? 0) - Date.now());
+    if (remaining === 0) return "";
+    const hours = Math.ceil(remaining / (60 * 60 * 1000));
+    return `Available in ${hours}h`;
+  }
+
   function getStoreName(url: string) {
     try {
       const normalizedUrl = /^https?:\/\//i.test(url)
@@ -716,7 +775,7 @@ function EmailSender({ onBack }: { onBack: () => void }) {
         subject: translated.subject,
         body: translated.body,
         language: translated.language,
-        sent: false,
+        sent: isCoolingDown(email),
       };
     }));
     setNotice(`${count} email${count === 1 ? "" : "s"} ready.`);
@@ -727,8 +786,14 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   }
 
   function openGmail(draft: EmailDraft) {
+    if (draft.sent || isCoolingDown(draft.email)) {
+      setNotice(`${draft.email} cannot be sent again for two days.`);
+      return;
+    }
     const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(draft.email)}&su=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}`;
     window.open(url, "_blank", "noopener,noreferrer");
+    markSent(draft.email);
+    setNotice(`${draft.email} marked sent. It is locked for two days.`);
   }
 
   async function copyLink(draft: EmailDraft) {
@@ -761,6 +826,7 @@ function EmailSender({ onBack }: { onBack: () => void }) {
       setDrafts((current) => current.map((item, itemIndex) =>
         itemIndex === index ? { ...item, sent: true, sending: false } : item
       ));
+      markSent(draft.email);
       return true;
     } catch (error) {
       setDrafts((current) => current.map((item, itemIndex) =>
@@ -916,14 +982,44 @@ function EmailSender({ onBack }: { onBack: () => void }) {
                 <button type="button" onClick={exportCSV} disabled={drafts.length === 0} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">CSV</button>
               </div>
             </div>
+            <div className="flex flex-wrap gap-2 border-b border-slate-800 px-5 pt-4">
+              {([
+                ["all", "All Emails", drafts.length],
+                ["sent", "Sent", drafts.filter((draft) => draft.sent).length],
+                ["unsent", "Unsent", drafts.filter((draft) => !draft.sent).length],
+              ] as const).map(([filter, label, count]) => (
+                <button
+                  key={filter}
+                  type="button"
+                  onClick={() => setEmailFilter(filter)}
+                  className={`border-b-2 px-3 py-2 text-sm font-medium transition ${
+                    emailFilter === filter
+                      ? "border-blue-500 text-blue-400"
+                      : "border-transparent text-slate-400 hover:text-white"
+                  }`}
+                >
+                  {label} ({count})
+                </button>
+              ))}
+            </div>
             <div className="divide-y divide-slate-800">
               {drafts.length === 0 ? (
                 <p className="p-8 text-center text-sm text-slate-500">Auto-send is ready. Add emails and store URLs above, then click Generate.</p>
-              ) : drafts.map((draft, index) => (
+              ) : filteredDrafts.length === 0 ? (
+                <p className="p-8 text-center text-sm text-slate-500">No emails in this list.</p>
+              ) : filteredDrafts.map((draft, index) => (
                 <div key={`${draft.email}-${index}`} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0"><p className="font-medium text-white">{draft.email} <span className="ml-2 text-xs text-slate-500">{draft.language}</span></p><p className="mt-1 truncate text-sm text-slate-400">Subject: {draft.subject}</p>{draft.failed && <p className="mt-1 text-xs text-red-400">Send failed</p>}</div>
+                  <div className="min-w-0">
+                    <p className="font-medium text-white">
+                      <span className={`mr-2 inline-block h-2 w-2 rounded-full ${draft.sent ? "bg-slate-600" : "bg-blue-400"}`} />
+                      {draft.email} <span className="ml-2 text-xs text-slate-500">{draft.language}</span>
+                    </p>
+                    <p className="mt-1 truncate text-sm text-slate-400">Subject: {draft.subject}</p>
+                    {draft.sent && <p className="mt-1 text-xs text-slate-500">{cooldownLabel(draft.email) || "Sent · locked for two days"}</p>}
+                    {draft.failed && <p className="mt-1 text-xs text-red-400">Send failed</p>}
+                  </div>
                   <div className="flex shrink-0 gap-2">
-                    <button type="button" onClick={() => openGmail(draft)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Open Gmail</button>
+                    <button type="button" onClick={() => openGmail(draft)} disabled={draft.sent || draft.sending} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">{draft.sending ? "Sending..." : draft.sent ? "Sent" : "Open Gmail"}</button>
                     <button type="button" onClick={() => copyLink(draft)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Copy link</button>
                   </div>
                 </div>
