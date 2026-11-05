@@ -61,6 +61,10 @@ type RobotsData = {
   sitemaps: string[];
 };
 
+type TextReadResult =
+  | { status: "ok"; text: string }
+  | { status: "aborted" | "too_large" | "error" };
+
 // --------------------------------------------
 // COUNTRY AND LANGUAGE DATA
 // --------------------------------------------
@@ -389,8 +393,8 @@ async function readLimitedText(
   response: Awaited<ReturnType<typeof undiciFetch>>,
   maxBytes: number,
   signal?: AbortSignal,
-): Promise<string | null> {
-  if (!response.body) return null;
+): Promise<TextReadResult> {
+  if (!response.body) return { status: "error" };
 
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
@@ -400,7 +404,7 @@ async function readLimitedText(
     while (true) {
       if (signal?.aborted) {
         await reader.cancel();
-        return null;
+        return { status: "aborted" };
       }
 
       const { done, value } = await reader.read();
@@ -411,7 +415,7 @@ async function readLimitedText(
 
       if (totalBytes > maxBytes) {
         await reader.cancel();
-        return null;
+        return { status: "too_large" };
       }
 
       chunks.push(value);
@@ -423,7 +427,7 @@ async function readLimitedText(
       // Ignore cancellation errors.
     }
 
-    return null;
+    return { status: signal?.aborted ? "aborted" : "error" };
   }
 
   const combined = new Uint8Array(totalBytes);
@@ -434,7 +438,10 @@ async function readLimitedText(
     offset += chunk.byteLength;
   }
 
-  return new TextDecoder("utf-8", { fatal: false }).decode(combined);
+  return {
+    status: "ok",
+    text: new TextDecoder("utf-8", { fatal: false }).decode(combined),
+  };
 }
 
 async function fetchPublicText(
@@ -471,10 +478,18 @@ async function fetchPublicText(
       return { status: "error", url: currentUrl.toString() };
     }
 
+    if (signal?.aborted) {
+      return { status: "aborted", url: currentUrl.toString() };
+    }
+
     // Resolve again for every request and pin the connection to the
     // validated address. This prevents a second DNS lookup from returning
     // a different address between validation and connection.
     const addresses = await resolvePublicAddresses(hostname);
+
+    if (signal?.aborted) {
+      return { status: "aborted", url: currentUrl.toString() };
+    }
 
     if (!addresses.length) {
       return { status: "error", url: currentUrl.toString() };
@@ -631,7 +646,15 @@ async function fetchPublicText(
 
     await agent.close().catch(() => undefined);
 
-    if (text === null) {
+    if (text.status === "aborted") {
+      return {
+        status: "aborted",
+        url: currentUrl.toString(),
+        httpStatus: response.status,
+      };
+    }
+
+    if (text.status !== "ok") {
       return {
         status: "error",
         url: currentUrl.toString(),
@@ -641,7 +664,7 @@ async function fetchPublicText(
 
     return {
       status: "ok",
-      text,
+      text: text.text,
       url: currentUrl.toString(),
     };
   }
@@ -771,6 +794,8 @@ async function discoverSitemaps(
   isSafeHost: (hostname: string) => Promise<boolean>,
   signal?: AbortSignal,
 ): Promise<string[]> {
+  if (signal?.aborted) return [];
+
   const sitemapCandidates = new Set<string>([
     new URL("/sitemap.xml", baseUrl).toString(),
     new URL("/sitemap_index.xml", baseUrl).toString(),
@@ -805,6 +830,8 @@ async function discoverSitemaps(
   const visited = new Set<string>();
 
   while (queue.length && visited.size < 12) {
+    if (signal?.aborted) return [];
+
     const sitemapUrl = queue.shift()!;
 
     if (visited.has(sitemapUrl)) continue;
@@ -817,6 +844,8 @@ async function discoverSitemaps(
       isSafeHost,
       signal,
     );
+
+    if (signal?.aborted) return [];
 
     if (result.status !== "ok") continue;
 
@@ -1339,6 +1368,15 @@ async function scanWebsite(
   }
 
   if (!(await isSafeHost(hostname))) {
+    if (signal?.aborted) {
+      return {
+        results: [],
+        status: "error",
+        hostname,
+        reason: "Scan cancelled",
+      };
+    }
+
     return {
       results: [],
       status: "blocked",
@@ -1404,6 +1442,15 @@ async function scanWebsite(
 
   let robotsRules: RobotsRule[] = [];
 
+  if (signal?.aborted) {
+    return {
+      results: [],
+      status: "error",
+      hostname,
+      reason: "Scan cancelled",
+    };
+  }
+
   if (robotsResult.status === "ok") {
     robotsRules = parseRobotsTxt(robotsResult.text).rules;
   }
@@ -1414,6 +1461,15 @@ async function scanWebsite(
     isSafeHost,
     signal,
   );
+
+  if (signal?.aborted) {
+    return {
+      results: [],
+      status: "error",
+      hostname,
+      reason: "Scan cancelled",
+    };
+  }
 
   const contactLinks = extractPageLinks(
     homepage.text,
@@ -1475,6 +1531,7 @@ async function scanWebsite(
         });
       }
     },
+    signal,
   );
 
   void pageResults;
@@ -1533,6 +1590,7 @@ async function runWithConcurrency<T, R>(
   items: T[],
   concurrency: number,
   worker: (item: T, index: number) => Promise<R>,
+  signal?: AbortSignal,
 ): Promise<R[]> {
   const results: R[] = new Array(items.length);
   let nextIndex = 0;
@@ -1543,6 +1601,8 @@ async function runWithConcurrency<T, R>(
     },
     async () => {
       while (true) {
+        if (signal?.aborted) return;
+
         const index = nextIndex++;
 
         if (index >= items.length) return;
@@ -1710,18 +1770,30 @@ function createNDJSONStream(
           completed += 1;
           totalEmails += outcome.results.length;
 
+          for (const result of outcome.results) {
+            emit({
+              type: "email",
+              domain,
+              hostname: outcome.hostname,
+              result,
+              results: [result],
+              totalEmails,
+            });
+          }
+
           emit({
             type: "result",
             domain,
             hostname: outcome.hostname,
             status: outcome.status,
             reason: outcome.reason,
-            results: outcome.results,
+            results: [],
             completed,
             total: domains.length,
             totalEmails,
           });
         },
+        abortController.signal,
       );
 
       if (!cancelled) {

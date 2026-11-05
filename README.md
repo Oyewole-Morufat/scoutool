@@ -50,3 +50,9 @@ npm run build
 
 Scans accept up to 1,000 normalized website domains per request. Requests are
 rate-limited and the scanner rejects private or non-public network targets.
+
+After a scan, Scoutool performs a brief background email check. It verifies
+email syntax and whether the domain has a public MX or address record. A
+result marked "Likely reachable" is not proof that the individual mailbox
+exists; only a real delivery attempt can confirm that, and some providers
+still accept messages before later bouncing them.

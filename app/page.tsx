@@ -9,10 +9,11 @@ type Result = {
   path: string;
   country: string;
   language: string;
+  verification?: "checking" | "likely" | "invalid_domain" | "uncertain";
 };
 
 type StreamEvent = {
-  type: "start" | "result" | "complete" | "error" | string;
+  type: "start" | "email" | "result" | "complete" | "error" | string;
   total?: number;
   completed?: number;
   totalEmails?: number;
@@ -20,6 +21,7 @@ type StreamEvent = {
   hostname?: string;
   status?: "success" | "no_email" | "blocked" | "error";
   results?: Result[];
+  result?: Result;
   reason?: string;
   error?: string;
 };
@@ -36,20 +38,22 @@ export default function Home() {
   const [running, setRunning] = useState(false);
   const [notice, setNotice] = useState("");
   const [currentSite, setCurrentSite] = useState("");
+  const verifiedBatch = useRef("");
+  const resultsRef = useRef<Result[]>([]);
 
   const scanLock = useRef(false);
   const scanAbortController = useRef<AbortController | null>(null);
+
+  const domains = input
+    .split(/\r?\n/)
+    .map((domain) => domain.trim())
+    .filter(Boolean);
 
   useEffect(() => {
     return () => {
       scanAbortController.current?.abort();
     };
   }, []);
-
-  const domains = input
-    .split(/\r?\n/)
-    .map((domain) => domain.trim())
-    .filter(Boolean);
 
   if (emailMode) {
     return (
@@ -63,14 +67,82 @@ export default function Home() {
   const progress =
     total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
 
+  function appendResults(incoming: Result[]) {
+    if (incoming.length === 0) return;
+
+    const existing = new Set(
+      resultsRef.current.map(
+        (result) =>
+          `${result.email.toLowerCase()}|${result.site.toLowerCase()}`
+      )
+    );
+    const next = [...resultsRef.current];
+
+    for (const result of incoming) {
+      const key = `${result.email.toLowerCase()}|${result.site.toLowerCase()}`;
+      if (!existing.has(key)) {
+        existing.add(key);
+        next.push(result);
+      }
+    }
+
+    resultsRef.current = next;
+    setResults(next);
+  }
+
   function resetScan() {
     setResults([]);
+    resultsRef.current = [];
     setProcessed(0);
     setTotal(0);
     setErrors(0);
     setBlocked(0);
     setNoEmail(0);
     setCurrentSite("");
+    verifiedBatch.current = "";
+  }
+
+  async function verifyEmailsInBackground(emailResults: Result[]) {
+    const emails = emailResults.map((result) => result.email);
+    const batchKey = emails.join("|");
+
+    if (!emails.length || verifiedBatch.current === batchKey) return;
+    verifiedBatch.current = batchKey;
+    setResults((current) => current.map((result) => (
+      emails.includes(result.email)
+        ? { ...result, verification: "checking" }
+        : result
+    )));
+
+    try {
+      const response = await fetch("/api/verify-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emails }),
+      });
+      if (!response.ok) throw new Error("Email verification request failed.");
+
+      const body = (await response.json()) as {
+        results?: Array<{
+          email: string;
+          status: "likely" | "invalid_domain" | "uncertain";
+        }>;
+      };
+      const statuses = new Map(
+        (body.results || []).map((item) => [item.email.toLowerCase(), item.status]),
+      );
+      setResults((current) =>
+        current.map((result) => ({
+          ...result,
+          verification: statuses.get(result.email.toLowerCase()) || "uncertain",
+        })),
+      );
+    } catch (error) {
+      console.error("Email verification failed:", error);
+      setResults((current) =>
+        current.map((result) => ({ ...result, verification: "uncertain" })),
+      );
+    }
   }
 
   function handleEvent(event: StreamEvent) {
@@ -81,27 +153,9 @@ export default function Home() {
         break;
 
       case "result": {
-        if (event.results) {
-          setResults((previous) => {
-            const existing = new Set(
-              previous.map(
-                (result) =>
-                  `${result.email.toLowerCase()}|${result.site.toLowerCase()}`
-              )
-            );
-            const next = [...previous];
-
-            for (const result of event.results ?? []) {
-              const key = `${result.email.toLowerCase()}|${result.site.toLowerCase()}`;
-              if (!existing.has(key)) {
-                existing.add(key);
-                next.push(result);
-              }
-            }
-
-            return next;
-          });
-        }
+        appendResults(
+          event.results ?? (event.result ? [event.result] : [])
+        );
 
         if (typeof event.completed === "number") {
           setProcessed(event.completed);
@@ -122,6 +176,16 @@ export default function Home() {
         break;
       }
 
+      case "email":
+        if (event.results?.[0]) {
+          if (event.domain || event.hostname) {
+            setCurrentSite(event.domain || event.hostname || "");
+          }
+
+          appendResults(event.results);
+        }
+        break;
+
       case "complete":
         if (typeof event.completed === "number") {
           setProcessed(event.completed);
@@ -131,6 +195,7 @@ export default function Home() {
         }
         setCurrentSite("");
         setNotice("Scan completed successfully.");
+        void verifyEmailsInBackground(resultsRef.current);
         break;
 
       case "error":
@@ -262,10 +327,19 @@ export default function Home() {
         );
       }
     } catch (error) {
-      console.error("Scanner request failed:", error);
+      const cancelled =
+        abortController.signal.aborted ||
+        (error instanceof DOMException && error.name === "AbortError");
 
-      const message =
-        error instanceof TypeError && /failed to fetch/i.test(error.message)
+      if (cancelled) {
+        setNotice("Scan cancelled.");
+      } else {
+        console.error("Scanner request failed:", error);
+      }
+
+      const message = cancelled
+        ? "Scan cancelled."
+        : error instanceof TypeError && /failed to fetch/i.test(error.message)
           ? `Unable to reach the scanner at ${new URL(
               "/api/scrape",
               window.location.origin,
@@ -411,14 +485,21 @@ export default function Home() {
 
               <button
                 type="button"
-                onClick={() => {
-                  scanAbortController.current?.abort();
-                  setEmailMode(true);
-                }}
+                onClick={() => setEmailMode(true)}
                 className="app-button rounded-xl border border-green-600/60 bg-green-300/10 px-6 py-3 text-sm font-semibold text-green-800 transition hover:bg-green-300/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Send Email
               </button>
+
+              {running && (
+                <button
+                  type="button"
+                  onClick={() => scanAbortController.current?.abort()}
+                  className="app-button rounded-xl border border-red-500/60 bg-red-300/10 px-6 py-3 text-sm font-semibold text-red-800 transition hover:bg-red-300/20"
+                >
+                  Stop Scan
+                </button>
+              )}
             </div>
           </div>
         </section>
@@ -526,6 +607,7 @@ export default function Home() {
                     <th scope="col" className="px-5 py-4">Email</th>
                     <th scope="col" className="px-5 py-4">Website</th>
                     <th scope="col" className="px-5 py-4">Source path</th>
+                    <th scope="col" className="px-5 py-4">Email status</th>
                   </tr>
                 </thead>
 
@@ -543,6 +625,15 @@ export default function Home() {
                       </td>
                       <td className="px-5 py-4 text-green-700">
                         {result.path || "—"}
+                      </td>
+                      <td className="px-5 py-4 text-green-700">
+                        {result.verification === "checking"
+                          ? "Checking..."
+                          : result.verification === "likely"
+                            ? "Likely reachable"
+                            : result.verification === "invalid_domain"
+                              ? "Invalid mail domain"
+                              : "Uncertain"}
                       </td>
                     </tr>
                   ))}
@@ -726,15 +817,21 @@ function EmailSender({
 
   useEffect(() => {
     const refreshCooldowns = () => {
-      setNow(Date.now());
-      setDrafts((current) => current.map((draft) => {
-        const stillCooling = (cooldowns[draft.email.trim().toLowerCase()] ?? 0) > now;
-        return stillCooling === draft.sent ? draft : { ...draft, sent: stillCooling };
-      }));
+      const currentTime = Date.now();
+      setNow(currentTime);
+      setDrafts((currentDrafts) =>
+        currentDrafts.map((draft) => {
+          const stillCooling =
+            (cooldowns[draft.email.trim().toLowerCase()] ?? 0) > currentTime;
+          return stillCooling === draft.sent
+            ? draft
+            : { ...draft, sent: stillCooling };
+        })
+      );
     };
     const timer = window.setInterval(refreshCooldowns, 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [cooldowns, now]);
+  }, [cooldowns]);
 
   const emailList = emails.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
   const urlList = storeUrls.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);

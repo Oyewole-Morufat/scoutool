@@ -108,7 +108,7 @@ function getClientIdentifier(request: NextRequest): string {
 
 export async function proxy(request: NextRequest) {
   if (
-    request.nextUrl.pathname !== "/api/scrape" ||
+    !["/api/scrape", "/api/verify-email"].includes(request.nextUrl.pathname) ||
     request.method !== "POST"
   ) {
     return NextResponse.next();
