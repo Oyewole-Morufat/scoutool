@@ -93,8 +93,7 @@ function getRateLimiter(): Ratelimit {
 function getClientIdentifier(request: NextRequest): string {
   const forwardedIp =
     request.headers.get("x-vercel-forwarded-for") ||
-    request.headers.get("x-real-ip") ||
-    request.headers.get("x-forwarded-for");
+    request.headers.get("x-real-ip");
 
   const clientIp =
     forwardedIp?.split(",")[0].trim() || "unknown-client";
@@ -161,12 +160,16 @@ export async function proxy(request: NextRequest) {
       error instanceof Error ? error.message : "Unknown error"
     );
 
+    if (process.env.NODE_ENV === "development") {
+      return NextResponse.next();
+    }
+
     return NextResponse.json(
       {
         error:
           "The scanning service is temporarily unavailable. Please try again shortly.",
       },
-      { status: 503 }
+      { status: 503 },
     );
   }
 }

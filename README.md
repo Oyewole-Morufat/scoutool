@@ -1,36 +1,41 @@
-This is a [Next.js](https://nextjs.org) project bootstrapped with [`create-next-app`](https://nextjs.org/docs/app/api-reference/cli/create-next-app).
+# Scoutool
 
-## Getting Started
+Scoutool scans public website pages for publicly listed business email
+addresses and streams results to the dashboard. It also provides a campaign
+helper for generating email links from scanned addresses.
 
-First, run the development server:
+## Local development
 
-```bash
+Install dependencies and start the development server:
+
+```text
+npm install
 npm run dev
-# or
-yarn dev
-# or
-pnpm dev
-# or
-bun dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000) with your browser to see the result.
+Open <http://localhost:3000>.
 
-You can start editing the page by modifying `app/page.tsx`. The page auto-updates as you edit the file.
+## Environment
 
-This project uses [`next/font`](https://nextjs.org/docs/app/building-your-application/optimizing/fonts) to automatically optimize and load [Geist](https://vercel.com/font), a new font family for Vercel.
+The API rate limiter uses Upstash Redis in production. Set these variables in
+`.env.local` or the deployment environment:
 
-## Learn More
+```text
+UPSTASH_REDIS_REST_URL=https://your-instance.upstash.io
+UPSTASH_REDIS_REST_TOKEN=your-token
+```
 
-To learn more about Next.js, take a look at the following resources:
+The URL must be the HTTPS Upstash REST endpoint. The proxy allows requests
+without Redis credentials during development, but production requests return
+`503` until rate limiting is configured.
 
-- [Next.js Documentation](https://nextjs.org/docs) - learn about Next.js features and API.
-- [Learn Next.js](https://nextjs.org/learn) - an interactive Next.js tutorial.
+## Validation
 
-You can check out [the Next.js GitHub repository](https://github.com/vercel/next.js) - your feedback and contributions are welcome!
+```text
+npm run lint
+npx tsc --noEmit
+npm run build
+```
 
-## Deploy on Vercel
-
-The easiest way to deploy your Next.js app is to use the [Vercel Platform](https://vercel.com/new?utm_medium=default-template&filter=next.js&utm_source=create-next-app&utm_campaign=create-next-app-readme) from the creators of Next.js.
-
-Check out our [Next.js deployment documentation](https://nextjs.org/docs/app/building-your-application/deploying) for more details.
+Scans accept up to 1,000 normalized website domains per request. Requests are
+rate-limited and the scanner rejects private or non-public network targets.

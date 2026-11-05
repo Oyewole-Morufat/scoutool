@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 type Result = {
   email: string;
@@ -11,24 +11,24 @@ type Result = {
 };
 
 type StreamEvent = {
-  type?: string;
+  type: "start" | "result" | "complete" | "error" | string;
   total?: number;
-  processed?: number;
-  successful?: number;
-  errors?: number;
-  blocked?: number;
-  noEmail?: number;
-  currentSite?: string;
-  result?: Result;
-  message?: string;
+  completed?: number;
+  totalEmails?: number;
+  domain?: string;
+  hostname?: string;
+  status?: "success" | "no_email" | "blocked" | "error";
+  results?: Result[];
+  reason?: string;
+  error?: string;
 };
 
 export default function Home() {
+  const [emailMode, setEmailMode] = useState(false);
   const [input, setInput] = useState("");
   const [results, setResults] = useState<Result[]>([]);
   const [processed, setProcessed] = useState(0);
   const [total, setTotal] = useState(0);
-  const [successful, setSuccessful] = useState(0);
   const [errors, setErrors] = useState(0);
   const [blocked, setBlocked] = useState(0);
   const [noEmail, setNoEmail] = useState(0);
@@ -36,27 +36,108 @@ export default function Home() {
   const [notice, setNotice] = useState("");
   const [currentSite, setCurrentSite] = useState("");
 
-  // Synchronous lock: prevents duplicate requests before React
-  // has time to update the running state.
   const scanLock = useRef(false);
+  const scanAbortController = useRef<AbortController | null>(null);
+
+  useEffect(() => {
+    return () => {
+      scanAbortController.current?.abort();
+    };
+  }, []);
 
   const domains = input
     .split(/\r?\n/)
-    .map((item) => item.trim())
+    .map((domain) => domain.trim())
     .filter(Boolean);
 
+  if (emailMode) {
+    return <EmailSender onBack={() => setEmailMode(false)} />;
+  }
+
   const progress =
-    total > 0
-      ? Math.round((processed / total) * 100)
-      : 0;
+    total > 0 ? Math.min(100, Math.round((processed / total) * 100)) : 0;
+
+  function resetScan() {
+    setResults([]);
+    setProcessed(0);
+    setTotal(0);
+    setErrors(0);
+    setBlocked(0);
+    setNoEmail(0);
+    setCurrentSite("");
+  }
+
+  function handleEvent(event: StreamEvent) {
+    switch (event.type) {
+      case "start":
+        setTotal(event.total ?? 0);
+        setNotice("Scanning started...");
+        break;
+
+      case "result": {
+        if (event.results) {
+          setResults((previous) => {
+            const existing = new Set(
+              previous.map(
+                (result) =>
+                  `${result.email.toLowerCase()}|${result.site.toLowerCase()}`
+              )
+            );
+            const next = [...previous];
+
+            for (const result of event.results ?? []) {
+              const key = `${result.email.toLowerCase()}|${result.site.toLowerCase()}`;
+              if (!existing.has(key)) {
+                existing.add(key);
+                next.push(result);
+              }
+            }
+
+            return next;
+          });
+        }
+
+        if (typeof event.completed === "number") {
+          setProcessed(event.completed);
+        }
+        if (typeof event.total === "number") {
+          setTotal(event.total);
+        }
+        if (event.domain || event.hostname) {
+          setCurrentSite(event.domain || event.hostname || "");
+        }
+        if (event.status === "error") {
+          setErrors((previous) => previous + 1);
+        } else if (event.status === "blocked") {
+          setBlocked((previous) => previous + 1);
+        } else if (event.status === "no_email") {
+          setNoEmail((previous) => previous + 1);
+        }
+        break;
+      }
+
+      case "complete":
+        if (typeof event.completed === "number") {
+          setProcessed(event.completed);
+        }
+        if (typeof event.total === "number") {
+          setTotal(event.total);
+        }
+        setCurrentSite("");
+        setNotice("Scan completed successfully.");
+        break;
+
+      case "error":
+        setNotice(event.error || "The server reported an error.");
+        break;
+
+      default:
+        console.warn("Unknown scanner event:", event);
+    }
+  }
 
   async function startScraping() {
-    // Stop another request from starting.
-    if (scanLock.current) {
-      return;
-    }
-
-    setNotice("");
+    if (scanLock.current) return;
 
     if (domains.length === 0) {
       setNotice("Please enter at least one website.");
@@ -64,208 +145,158 @@ export default function Home() {
     }
 
     if (domains.length > 1000) {
-      setNotice(
-        "Maximum limit is 1,000 websites per batch.",
-      );
+      setNotice("You can scan a maximum of 1,000 websites at a time.");
       return;
     }
 
-    // Lock immediately, before updating React state.
     scanLock.current = true;
-
+    const abortController = new AbortController();
+    scanAbortController.current = abortController;
     setRunning(true);
-    setResults([]);
-    setProcessed(0);
-    setTotal(domains.length);
-    setSuccessful(0);
-    setErrors(0);
-    setBlocked(0);
-    setNoEmail(0);
-    setCurrentSite("");
-    setNotice("Connecting to websites...");
+    resetScan();
+    setNotice("Connecting to scanner...");
 
-    let reader: ReadableStreamDefaultReader<Uint8Array> | null =
-      null;
-
-    let finished = false;
+    let reader: ReadableStreamDefaultReader<Uint8Array> | null = null;
 
     try {
       const response = await fetch("/api/scrape", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
+          Accept: "application/x-ndjson",
         },
+        signal: abortController.signal,
         body: JSON.stringify({ domains }),
       });
 
       if (!response.ok) {
-        let errorMessage = "Scraping failed.";
+        const responseText = await response.text();
+        let message = responseText;
 
         try {
-          const data = await response.json();
-
-          if (
-            typeof data.error === "string" &&
-            data.error.trim()
-          ) {
-            errorMessage = data.error;
+          const errorBody = JSON.parse(responseText) as { error?: unknown };
+          if (typeof errorBody.error === "string" && errorBody.error.trim()) {
+            message = errorBody.error;
           }
         } catch {
-          // Keep the fallback message.
+          // Keep the response text when it is not JSON.
         }
 
-        throw new Error(errorMessage);
+        throw new Error(
+          message || `Scanner request failed (${response.status}).`
+        );
       }
 
       if (!response.body) {
-        throw new Error(
-          "Your browser could not read the live results.",
-        );
+        throw new Error("The server did not return a readable response stream.");
       }
 
       reader = response.body.getReader();
 
       const decoder = new TextDecoder();
       let buffer = "";
+      let finished = false;
 
-      // Process one complete event from the NDJSON stream.
-      function processEvent(line: string) {
-        if (!line.trim()) return;
-
-        const event = JSON.parse(line) as StreamEvent;
-
-        if (event.type === "start") {
-          setTotal(event.total ?? domains.length);
-          setNotice("Scanning websites...");
-          return;
-        }
-
-        if (event.type === "result") {
-          if (event.result) {
-            const result = event.result;
-
-            setResults((previous) => [
-              ...previous,
-              result,
-            ]);
-          }
-
-          return;
-        }
-
-        if (event.type === "progress") {
-          setProcessed(event.processed ?? 0);
-          setTotal(event.total ?? domains.length);
-          setSuccessful(event.successful ?? 0);
-          setErrors(event.errors ?? 0);
-          setBlocked(event.blocked ?? 0);
-          setNoEmail(event.noEmail ?? 0);
-          setCurrentSite(event.currentSite ?? "");
-          setNotice("Scanning websites...");
-
-          return;
-        }
-
-        if (event.type === "done") {
-          setProcessed(event.processed ?? 0);
-          setSuccessful(event.successful ?? 0);
-          setErrors(event.errors ?? 0);
-          setBlocked(event.blocked ?? 0);
-          setNoEmail(event.noEmail ?? 0);
-          setCurrentSite("");
-          setNotice("Scraping completed successfully.");
-
-          finished = true;
-          return;
-        }
-
-        if (event.type === "error") {
-          throw new Error(
-            event.message ||
-              "The scanning process was interrupted.",
-          );
-        }
-      }
-
-      // Read the stream until the server finishes.
       while (!finished) {
         const { value, done } = await reader.read();
 
         if (done) {
-          // Flush any remaining decoder data.
           buffer += decoder.decode();
+        } else if (value) {
+          buffer += decoder.decode(value, { stream: true });
+        }
 
-          // Process a final event even if it has no newline.
-          if (buffer.trim()) {
-            processEvent(buffer);
+        const lines = buffer.split("\n");
+        buffer = lines.pop() ?? "";
+
+        for (const rawLine of lines) {
+          const line = rawLine.trim();
+          if (!line) continue;
+
+          let event: StreamEvent;
+
+          try {
+            event = JSON.parse(line) as StreamEvent;
+          } catch {
+            console.error("Invalid scanner response line:", line);
+            setNotice("Received an unreadable response from the scanner.");
+            continue;
+          }
+
+          handleEvent(event);
+
+          if (event.type === "complete") {
+            finished = true;
+            break;
+          }
+        }
+
+        if (done) {
+          const finalLine = buffer.trim();
+
+          if (finalLine && !finished) {
+            try {
+              const event = JSON.parse(finalLine) as StreamEvent;
+              handleEvent(event);
+              finished = event.type === "complete";
+            } catch {
+              console.error("Invalid final scanner response:", finalLine);
+            }
           }
 
           break;
         }
-
-        buffer += decoder.decode(value, {
-          stream: true,
-        });
-
-        const lines = buffer.split("\n");
-
-        buffer = lines.pop() || "";
-
-        for (const line of lines) {
-          if (finished) break;
-
-          processEvent(line);
-        }
       }
 
       if (!finished) {
-        throw new Error(
-          "The scraping connection ended before completion.",
+        setNotice((previous) =>
+          previous === "Scan completed successfully."
+            ? previous
+            : "The connection ended before the scanner sent a completion event."
         );
       }
     } catch (error) {
-      setNotice(
-        error instanceof Error
-          ? error.message
-          : "Unable to connect to the scraping service.",
-      );
+      console.error("Scanner request failed:", error);
 
-      // Release an unfinished response reader safely.
-      if (reader && !finished) {
-        await reader.cancel().catch(() => {});
+      const message =
+        error instanceof TypeError && /failed to fetch/i.test(error.message)
+          ? `Unable to reach the scanner at ${new URL(
+              "/api/scrape",
+              window.location.origin,
+            ).toString()}. Verify that the published app includes its API route and try again.`
+          : error instanceof Error
+            ? error.message
+            : "An unexpected error occurred.";
+
+      setNotice(message);
+
+      if (reader) {
+        try {
+          await reader.cancel();
+        } catch {
+          // The stream may already be closed.
+        }
       }
     } finally {
-      // Always release the lock when the scan ends.
+      if (scanAbortController.current === abortController) {
+        scanAbortController.current = null;
+      }
       scanLock.current = false;
-
       setRunning(false);
       setCurrentSite("");
     }
   }
 
-  // --------------------------------------------
-  // CSV DOWNLOAD
-  // --------------------------------------------
-
   function downloadCSV() {
     if (results.length === 0) {
-      setNotice(
-        "No email results are available to download yet.",
-      );
-
+      setNotice("There are no email results to download yet.");
       return;
     }
 
-    const headers = [
-      "Email",
-      "Website",
-      "Path",
-      "Country",
-      "Language",
-    ];
+    const headers = ["Email", "Website", "Path", "Country", "Language"];
 
-    const escapeCSV = (value: string) =>
-      `"${String(value ?? "").replace(/"/g, '""')}"`;
+    const escapeCSV = (value: string | undefined) =>
+      `"${(value ?? "").replace(/"/g, '""')}"`;
 
     const rows = results.map((result) =>
       [
@@ -276,15 +307,11 @@ export default function Home() {
         result.language,
       ]
         .map(escapeCSV)
-        .join(","),
+        .join(",")
     );
 
-    const csv = [
-      headers.join(","),
-      ...rows,
-    ].join("\r\n");
-
-    const blob = new Blob([csv], {
+    const csv = [headers.join(","), ...rows].join("\r\n");
+    const blob = new Blob(["\uFEFF" + csv], {
       type: "text/csv;charset=utf-8;",
     });
 
@@ -293,308 +320,528 @@ export default function Home() {
 
     link.href = url;
     link.download = "scoutool-email-results.csv";
-
     document.body.appendChild(link);
     link.click();
     link.remove();
 
-    // Allow the browser to start the download before cleanup.
-    window.setTimeout(() => {
-      URL.revokeObjectURL(url);
-    }, 1000);
+    URL.revokeObjectURL(url);
+    setNotice("CSV file downloaded.");
   }
 
-  // --------------------------------------------
-  // DASHBOARD
-  // --------------------------------------------
-
   return (
-    <main className="min-h-screen bg-slate-50 text-slate-900">
-      <header className="border-b border-slate-200 bg-white">
-        <div className="mx-auto flex max-w-7xl items-center justify-between px-5 py-5">
+    <main className="min-h-screen bg-slate-950 px-4 py-8 text-white sm:px-6 lg:px-10">
+      <div className="mx-auto max-w-7xl">
+        <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
-            <h1 className="text-2xl font-bold tracking-tight">
-              Scoutool
-              <span className="text-blue-600">.</span>
-            </h1>
-
-            <p className="mt-1 text-sm text-slate-500">
-              Bulk Website Email Scraper
+            <div className="mb-2 flex items-center gap-2">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-xl font-bold">
+                S
+              </div>
+              <h1 className="text-2xl font-bold tracking-tight">Scoutool</h1>
+            </div>
+            <p className="text-sm text-slate-400">
+              Website email discovery dashboard
             </p>
           </div>
 
-          <span className="rounded-full bg-green-50 px-3 py-1.5 text-xs font-medium text-green-700">
-            Website Scanner
-          </span>
-        </div>
-      </header>
+          <div className="flex items-center gap-2 self-start rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm">
+            <span
+              className={`h-2 w-2 rounded-full ${
+                running ? "animate-pulse bg-blue-400" : "bg-emerald-400"
+              }`}
+            />
+            {running ? "Scanner running" : "Ready to scan"}
+          </div>
+        </header>
 
-      <div className="mx-auto max-w-7xl px-5 py-8">
-        <section className="mb-7">
-          <h2 className="text-2xl font-bold">
-            Find Business Contact Emails
-          </h2>
-
-          <p className="mt-2 text-sm text-slate-500">
-            Discover publicly listed business contact emails
-            from websites.
-          </p>
-        </section>
-
-        <section className="grid gap-6 lg:grid-cols-[1fr_1.2fr]">
-          {/* WEBSITE INPUT */}
-          <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
-              <h3 className="font-semibold">
-                Website Domains
-              </h3>
-
-              <span className="text-sm text-slate-500">
-                {domains.length}/1,000
-              </span>
+        <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl sm:p-7">
+          <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="text-lg font-semibold">Website scanner</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                Enter one website per line to discover publicly listed email
+                addresses.
+              </p>
             </div>
 
-            <textarea
-              value={input}
-              onChange={(event) =>
-                setInput(event.target.value)
-              }
-              placeholder={
-                "https://example.com\nhttps://anotherstore.com\nhttps://website.com"
-              }
-              disabled={running}
-              className="min-h-72 w-full resize-y rounded-lg border border-slate-200 bg-slate-50 p-4 text-sm outline-none transition focus:border-blue-500 focus:ring-2 focus:ring-blue-100 disabled:opacity-60"
-            />
+            <span className="text-sm text-slate-400">
+              {domains.length.toLocaleString()} / 1,000 websites
+            </span>
+          </div>
 
-            <p className="mt-2 text-xs text-slate-500">
-              Enter one website per line. Maximum 1,000
-              websites.
+          <textarea
+            value={input}
+            onChange={(event) => setInput(event.target.value)}
+            disabled={running}
+            placeholder={"example.com\nhttps://another-example.com\nthird-example.com"}
+            rows={8}
+            className="w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+          />
+
+          <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+            <p className="text-xs text-slate-500">
+              Maximum 1,000 websites per scan.
             </p>
 
-            <button
-              type="button"
-              onClick={startScraping}
-              disabled={
-                running ||
-                domains.length === 0 ||
-                domains.length > 1000
-              }
-              aria-busy={running}
-              className="mt-5 flex w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-5 py-3 font-semibold text-white transition hover:bg-blue-700 disabled:cursor-not-allowed disabled:bg-slate-300"
-            >
-              {running && (
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-white border-t-transparent" />
-              )}
+            <div className="flex flex-wrap gap-3">
+              <button
+                type="button"
+                onClick={() => setInput("")}
+                disabled={running || !input}
+                className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-medium text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Clear
+              </button>
 
-              {running
-                ? "Scraping in progress..."
-                : "Start Scraping"}
-            </button>
+              <button
+                type="button"
+                onClick={startScraping}
+                disabled={running || domains.length === 0 || domains.length > 1000}
+                className="rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {running ? "Scanning..." : "Start Scraping"}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  scanAbortController.current?.abort();
+                  setEmailMode(true);
+                }}
+                className="rounded-xl border border-emerald-500/60 bg-emerald-500/10 px-6 py-3 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                Send Email
+              </button>
+            </div>
+          </div>
+        </section>
+
+        <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-6">
+          <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-semibold">Scan progress</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                {currentSite
+                  ? `Currently scanning: ${currentSite}`
+                  : notice || "Waiting for a scan to begin."}
+              </p>
+            </div>
+
+            <span className="text-lg font-bold tabular-nums text-blue-400">
+              {progress}%
+            </span>
+          </div>
+
+          <div
+            className="h-3 overflow-hidden rounded-full bg-slate-800"
+            role="progressbar"
+            aria-label="Scan progress"
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={progress}
+          >
+            <div
+              className="h-full rounded-full bg-blue-500 transition-all duration-300"
+              style={{ width: `${progress}%` }}
+            />
+          </div>
+
+          <div className="mt-3 flex justify-between text-xs text-slate-500">
+            <span>{processed.toLocaleString()} processed</span>
+            <span>{total.toLocaleString()} total</span>
+          </div>
+        </section>
+
+        <section className="mb-6 grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
+          <StatCard
+            title="Emails Found"
+            value={results.length}
+            description="Unique email results"
+            color="text-emerald-400"
+          />
+          <StatCard
+            title="Websites Processed"
+            value={processed}
+            description="Websites checked"
+            color="text-blue-400"
+          />
+          <StatCard
+            title="Errors"
+            value={errors}
+            description="Scanning errors reported"
+            color="text-red-400"
+          />
+          <StatCard
+            title="Blocked / No Email"
+            value={blocked + noEmail}
+            description={`${blocked} blocked · ${noEmail} without email`}
+            color="text-amber-400"
+          />
+        </section>
+
+        <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
+          <div className="flex flex-col gap-3 border-b border-slate-800 p-5 sm:flex-row sm:items-center sm:justify-between">
+            <div>
+              <h2 className="font-semibold">Discovered email addresses</h2>
+              <p className="mt-1 text-sm text-slate-400">
+                {results.length.toLocaleString()} unique results
+              </p>
+            </div>
 
             <button
               type="button"
               onClick={downloadCSV}
               disabled={results.length === 0}
-              className="mt-3 w-full rounded-lg border border-slate-200 bg-white px-5 py-3 font-semibold text-slate-700 transition hover:bg-slate-50 disabled:cursor-not-allowed disabled:opacity-40"
+              className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-semibold text-white transition hover:border-blue-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              <span className="mr-2">↓</span>
-              Download CSV ({results.length})
+              Download CSV
             </button>
-
-            {/* PROGRESS */}
-            {running && (
-              <div
-                className="mt-5 rounded-lg bg-blue-50 p-4"
-                aria-live="polite"
-              >
-                <div className="flex items-center justify-between text-sm">
-                  <span className="font-medium text-blue-800">
-                    Scanning websites
-                  </span>
-
-                  <span className="font-semibold text-blue-800">
-                    {progress}%
-                  </span>
-                </div>
-
-                <div className="mt-3 h-2 overflow-hidden rounded-full bg-blue-100">
-                  <div
-                    className="h-full rounded-full bg-blue-600 transition-all duration-300"
-                    style={{
-                      width: `${progress}%`,
-                    }}
-                  />
-                </div>
-
-                <p className="mt-3 text-xs text-blue-700">
-                  Processed {processed} of {total} websites
-                </p>
-
-                {currentSite && (
-                  <p className="mt-2 break-all text-xs text-blue-600">
-                    Currently scanning: {currentSite}
-                  </p>
-                )}
-
-                <p className="mt-2 text-xs text-blue-700">
-                  Emails discovered: {results.length}
-                </p>
-              </div>
-            )}
-
-            {/* STATUS MESSAGE */}
-            {notice && (
-              <p
-                className="mt-4 rounded-lg bg-slate-100 p-3 text-sm text-slate-700"
-                role="status"
-                aria-live="polite"
-              >
-                {notice}
-              </p>
-            )}
           </div>
 
-          {/* RESULTS AND STATISTICS */}
-          <div className="space-y-6">
-            <div className="grid grid-cols-2 gap-4">
-              <StatCard
-                label="Processed"
-                value={processed}
-              />
-
-              <StatCard
-                label="Emails Found"
-                value={results.length}
-              />
-
-              <StatCard
-                label="Successful"
-                value={successful}
-              />
-
-              <StatCard
-                label="Errors"
-                value={errors}
-              />
+          {results.length === 0 ? (
+            <div className="px-5 py-16 text-center">
+              <div className="mb-3 text-3xl">📧</div>
+              <h3 className="font-medium text-slate-300">
+                No email addresses found yet
+              </h3>
+              <p className="mt-2 text-sm text-slate-500">
+                Start a scan to see discovered email addresses here.
+              </p>
             </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full min-w-[650px] text-left text-sm">
+                <caption className="sr-only">
+                  Email addresses discovered by Scoutool
+                </caption>
+                <thead className="bg-slate-950/70 text-xs uppercase tracking-wider text-slate-400">
+                  <tr>
+                    <th scope="col" className="px-5 py-4">Email</th>
+                    <th scope="col" className="px-5 py-4">Website</th>
+                    <th scope="col" className="px-5 py-4">Source path</th>
+                  </tr>
+                </thead>
 
-            <div className="grid grid-cols-2 gap-4">
-              <StatCard
-                label="Blocked"
-                value={blocked}
-              />
-
-              <StatCard
-                label="No Email Found"
-                value={noEmail}
-              />
-            </div>
-
-            {/* LIVE EXTRACTION RESULTS */}
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-3">
-                <div>
-                  <h3 className="font-semibold">
-                    Live Extraction Results
-                  </h3>
-
-                  <p className="mt-1 text-xs text-slate-500">
-                    New email results appear as they are
-                    discovered.
-                  </p>
-                </div>
-
-                <span className="rounded-full bg-blue-50 px-3 py-1 text-xs font-medium text-blue-700">
-                  {results.length} found
-                </span>
-              </div>
-
-              <div className="mt-5 max-h-[520px] overflow-auto">
-                <table className="w-full text-left text-sm">
-                  <thead className="sticky top-0 bg-white">
-                    <tr className="border-b border-slate-200 text-xs text-slate-500">
-                      <th className="px-3 py-3 font-medium">
-                        Email
-                      </th>
-
-                      <th className="px-3 py-3 font-medium">
-                        Website
-                      </th>
-
-                      <th className="px-3 py-3 font-medium">
-                        Path
-                      </th>
+                <tbody className="divide-y divide-slate-800">
+                  {results.map((result, index) => (
+                    <tr
+                      key={`${result.email}-${result.site}-${index}`}
+                      className="transition hover:bg-slate-800/40"
+                    >
+                      <td className="px-5 py-4 font-medium text-emerald-400">
+                        {result.email}
+                      </td>
+                      <td className="px-5 py-4 text-slate-300">
+                        {result.site}
+                      </td>
+                      <td className="px-5 py-4 text-slate-400">
+                        {result.path || "—"}
+                      </td>
                     </tr>
-                  </thead>
-
-                  <tbody>
-                    {results.length === 0 ? (
-                      <tr>
-                        <td
-                          colSpan={3}
-                          className="px-3 py-12 text-center text-slate-400"
-                        >
-                          {running
-                            ? "Searching for publicly listed emails..."
-                            : "No email results yet. Start scraping to see results here."}
-                        </td>
-                      </tr>
-                    ) : (
-                      results.map((result, index) => (
-                        <tr
-                          key={`${result.email}-${index}`}
-                          className="border-b border-slate-100 last:border-0"
-                        >
-                          <td className="break-all px-3 py-3 font-medium text-blue-700">
-                            {result.email}
-                          </td>
-
-                          <td className="break-all px-3 py-3 text-slate-600">
-                            {result.site}
-                          </td>
-
-                          <td className="break-all px-3 py-3 text-slate-500">
-                            {result.path}
-                          </td>
-                        </tr>
-                      ))
-                    )}
-                  </tbody>
-                </table>
-              </div>
-
-              <p className="mt-4 text-xs text-slate-400">
-                Country and language are included in the CSV
-                when detected.
-              </p>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          </div>
+          )}
         </section>
+
+        <footer className="mt-8 text-center text-xs text-slate-600">
+          Scoutool · Website email discovery
+        </footer>
       </div>
     </main>
   );
 }
 
-// --------------------------------------------
-// STATISTICS CARD
-// --------------------------------------------
-
 function StatCard({
-  label,
+  title,
   value,
+  description,
+  color,
 }: {
-  label: string;
+  title: string;
   value: number;
+  description: string;
+  color: string;
 }) {
   return (
-    <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm">
-      <p className="text-sm text-slate-500">
-        {label}
+    <div className="rounded-2xl border border-slate-800 bg-slate-900 p-5">
+      <p className="text-sm text-slate-400">{title}</p>
+      <p className={`mt-3 text-3xl font-bold tabular-nums ${color}`}>
+        {value.toLocaleString()}
       </p>
-
-      <p className="mt-2 text-3xl font-bold">
-        {value}
-      </p>
+      <p className="mt-2 text-xs text-slate-500">{description}</p>
     </div>
+  );
+}
+
+type EmailDraft = {
+  email: string;
+  storeUrl: string;
+  store: string;
+  subject: string;
+  body: string;
+  sent: boolean;
+};
+
+function EmailSender({ onBack }: { onBack: () => void }) {
+  const [emails, setEmails] = useState("");
+  const [storeUrls, setStoreUrls] = useState("");
+  const [subject, setSubject] = useState("Collaborating with {store}");
+  const [body, setBody] = useState(
+    "Hi {store}, I love your website and would love to collaborate."
+  );
+  const [drafts, setDrafts] = useState<EmailDraft[]>([]);
+  const [notice, setNotice] = useState("");
+  const [intervalSeconds, setIntervalSeconds] = useState(5);
+  const [autoSending, setAutoSending] = useState(false);
+  const fileInput = useRef<HTMLInputElement>(null);
+  const autoSendTimer = useRef<ReturnType<typeof setInterval> | null>(null);
+  const nextDraftIndex = useRef(0);
+
+  useEffect(() => {
+    return () => {
+      if (autoSendTimer.current) {
+        clearInterval(autoSendTimer.current);
+      }
+    };
+  }, []);
+
+  const emailList = emails.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
+  const urlList = storeUrls.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
+  const readyCount = Math.min(emailList.length, urlList.length);
+
+  function stopAutoSend() {
+    if (autoSendTimer.current) {
+      clearInterval(autoSendTimer.current);
+      autoSendTimer.current = null;
+    }
+    setAutoSending(false);
+  }
+
+  function clearSender() {
+    stopAutoSend();
+    setEmails("");
+    setStoreUrls("");
+    setDrafts([]);
+    setNotice("");
+  }
+
+  function getStoreName(url: string) {
+    try {
+      const normalizedUrl = /^https?:\/\//i.test(url)
+        ? url
+        : `https://${url}`;
+
+      return new URL(normalizedUrl).hostname.replace(/^www\./, "");
+    } catch {
+      return url.replace(/^https?:\/\//, "").split("/")[0] || "there";
+    }
+  }
+
+  function generateDrafts() {
+    if (emailList.length === 0) {
+      setNotice("Add at least one email.");
+      return;
+    }
+    if (urlList.length === 0) {
+      setNotice("Add at least one store URL.");
+      return;
+    }
+    const count = Math.min(emailList.length, urlList.length);
+    nextDraftIndex.current = 0;
+    setDrafts(emailList.slice(0, count).map((email, index) => {
+      const store = getStoreName(urlList[index]);
+      return {
+        email,
+        storeUrl: urlList[index],
+        store,
+        subject: subject.replace(/\{store\}/gi, store),
+        body: body.replace(/\{store\}/gi, store),
+        sent: false,
+      };
+    }));
+    setNotice(`${count} email${count === 1 ? "" : "s"} ready.`);
+  }
+
+  function getMailtoLink(draft: EmailDraft) {
+    return `mailto:${encodeURIComponent(draft.email)}?subject=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}`;
+  }
+
+  function openGmail(draft: EmailDraft) {
+    const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(draft.email)}&su=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}`;
+    window.open(url, "_blank", "noopener,noreferrer");
+  }
+
+  async function copyLink(draft: EmailDraft) {
+    try {
+      await navigator.clipboard.writeText(getMailtoLink(draft));
+      setNotice("Email link copied.");
+    } catch {
+      setNotice("Could not copy the link. Please copy it manually.");
+    }
+  }
+
+  function openNextDraft() {
+    const nextIndex = nextDraftIndex.current;
+    if (nextIndex < 0) {
+      stopAutoSend();
+      setNotice("All email links have been opened.");
+      return;
+    }
+    if (!drafts[nextIndex]) {
+      stopAutoSend();
+      setNotice("All email links have been opened.");
+      return;
+    }
+    window.open(getMailtoLink(drafts[nextIndex]), "_blank");
+    nextDraftIndex.current += 1;
+    setDrafts((current) => current.map((draft, index) =>
+      index === nextIndex ? { ...draft, sent: true } : draft
+    ));
+  }
+
+  function startAutoSend() {
+    if (drafts.length === 0) {
+      setNotice("Generate emails before starting auto-send.");
+      return;
+    }
+    if (autoSending) return;
+    setAutoSending(true);
+    setNotice("Auto-send started. Each link will open in a new tab.");
+    openNextDraft();
+    autoSendTimer.current = setInterval(openNextDraft, intervalSeconds * 1000);
+  }
+
+  function exportCSV() {
+    if (drafts.length === 0) {
+      setNotice("Generate emails before exporting CSV.");
+      return;
+    }
+    const escape = (value: string) => `"${value.replace(/"/g, '""')}"`;
+    const csv = [
+      ["Email", "Store URL", "Subject", "Body", "Email Link"].join(","),
+      ...drafts.map((draft) =>
+        [draft.email, draft.storeUrl, draft.subject, draft.body, getMailtoLink(draft)].map(escape).join(",")
+      ),
+    ].join("\r\n");
+    const url = URL.createObjectURL(new Blob(["\uFEFF" + csv], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "scoutool-email-campaign.csv";
+    link.click();
+    URL.revokeObjectURL(url);
+    setNotice("CSV file downloaded.");
+  }
+
+  function importCSV(event: React.ChangeEvent<HTMLInputElement>) {
+    const file = event.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const rows = (typeof reader.result === "string" ? reader.result : "")
+        .split(/\r?\n/)
+        .slice(1)
+        .map(parseCsvRow)
+        .filter((row) => row[0]);
+      setEmails(rows.map((row) => row[0]).join("\n"));
+      setStoreUrls(rows.map((row) => row[1] || "").join("\n"));
+      setNotice(`${rows.length} CSV row${rows.length === 1 ? "" : "s"} imported.`);
+    };
+    reader.readAsText(file);
+    event.target.value = "";
+  }
+
+  function parseCsvRow(row: string): string[] {
+    const values: string[] = [];
+    let value = "";
+    let quoted = false;
+
+    for (let index = 0; index < row.length; index += 1) {
+      const character = row[index];
+
+      if (character === '"') {
+        if (quoted && row[index + 1] === '"') {
+          value += '"';
+          index += 1;
+        } else {
+          quoted = !quoted;
+        }
+      } else if (character === "," && !quoted) {
+        values.push(value.trim());
+        value = "";
+      } else {
+        value += character;
+      }
+    }
+
+    values.push(value.trim());
+    return values;
+  }
+
+  return (
+    <main className="min-h-screen bg-slate-950 px-4 py-8 text-white sm:px-6 lg:px-10">
+      <div className="mx-auto max-w-5xl">
+        <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <button type="button" onClick={onBack} className="text-slate-400 hover:text-white">← Scanner</button>
+            <div className="h-8 w-px bg-slate-700" />
+            <div><h1 className="text-2xl font-bold tracking-tight">Scoutool</h1><p className="text-sm text-slate-400">Email sender</p></div>
+          </div>
+          <div className="flex gap-2">
+            <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={importCSV} className="hidden" />
+            <button type="button" onClick={() => fileInput.current?.click()} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">Import CSV</button>
+            <button type="button" onClick={clearSender} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">Clear</button>
+            <button type="button" onClick={() => setNotice("Use {store} in the subject or body to personalize each email.")} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">Help</button>
+          </div>
+        </header>
+
+        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl sm:p-7">
+          <div className="grid gap-5 md:grid-cols-2">
+            <label className="text-sm font-medium text-slate-300">Emails
+              <textarea value={emails} onChange={(event) => setEmails(event.target.value)} placeholder={"email@store.com\nhello@shop.fr"} rows={7} className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm text-white outline-none focus:border-blue-500" />
+            </label>
+            <label className="text-sm font-medium text-slate-300">Store URLs
+              <textarea value={storeUrls} onChange={(event) => setStoreUrls(event.target.value)} placeholder={"https://store.com\nhttps://shop.fr"} rows={7} className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm text-white outline-none focus:border-blue-500" />
+            </label>
+            <label className="text-sm font-medium text-slate-300">Subject <span className="text-slate-500">{"{store}"} is personalized</span>
+              <input value={subject} onChange={(event) => setSubject(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-blue-500" />
+            </label>
+            <label className="text-sm font-medium text-slate-300">Body <span className="text-slate-500">{"{store}"} is personalized</span>
+              <textarea value={body} onChange={(event) => setBody(event.target.value)} rows={3} className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-blue-500" />
+            </label>
+          </div>
+          <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
+            <span className="text-sm text-slate-400">{readyCount}/{Math.max(emailList.length, urlList.length)} ready</span>
+            <button type="button" onClick={generateDrafts} className="rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold hover:bg-blue-500">Generate</button>
+          </div>
+        </section>
+
+        {drafts.length > 0 && (
+          <section className="mt-6 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 p-5">
+              <div><h2 className="font-semibold">{drafts.length} generated emails</h2><p className="mt-1 text-sm text-slate-400">{drafts.filter((draft) => !draft.sent).length} unsent · opens each link automatically</p></div>
+              <div className="flex flex-wrap items-center gap-2">
+                <label className="text-sm text-slate-400">Every <input type="number" min={1} value={intervalSeconds} onChange={(event) => setIntervalSeconds(Math.max(1, Number(event.target.value) || 1))} className="ml-1 w-16 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-center text-white" /> sec</label>
+                <button type="button" onClick={autoSending ? stopAutoSend : startAutoSend} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500">{autoSending ? "Stop" : "Start"}</button>
+                <button type="button" onClick={exportCSV} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">CSV</button>
+              </div>
+            </div>
+            <div className="divide-y divide-slate-800">
+              {drafts.map((draft, index) => (
+                <div key={`${draft.email}-${index}`} className="flex flex-col gap-3 p-5 sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0"><p className="font-medium text-white">{draft.email}</p><p className="mt-1 truncate text-sm text-slate-400">Subject: {draft.subject}</p></div>
+                  <div className="flex shrink-0 gap-2">
+                    <button type="button" onClick={() => openGmail(draft)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Open Gmail</button>
+                    <button type="button" onClick={() => copyLink(draft)} className="rounded-lg border border-slate-700 px-3 py-2 text-sm hover:bg-slate-800">Copy link</button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </section>
+        )}
+        {notice && <p role="status" className="mt-4 text-center text-sm text-slate-400">{notice}</p>}
+      </div>
+    </main>
   );
 }
