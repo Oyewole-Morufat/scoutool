@@ -36,10 +36,6 @@ input {
     linear-gradient(135deg, #ffffff 0%, #f3fcf5 50%, #ffffff 100%);
 }
 
-.app-shell::marker {
-  content: "";
-}
-
 .app-shell::before,
 .app-shell::after {
   position: absolute;

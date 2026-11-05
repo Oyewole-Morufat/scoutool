@@ -606,7 +606,7 @@ type EmailActivity = {
   id: string;
   recipients: string[];
   subject: string;
-  status: "pending" | "accepted" | "failed";
+  status: "pending" | "opened" | "accepted" | "failed";
   createdAt: string;
   error?: string;
 };
@@ -685,25 +685,33 @@ function EmailSender({
             )
           );
         }
+        const savedActivity = window.localStorage.getItem(EMAIL_ACTIVITY_KEY);
+        if (savedActivity) {
+          const parsedActivity = JSON.parse(savedActivity) as unknown;
+          if (Array.isArray(parsedActivity)) {
+            setActivity(parsedActivity as EmailActivity[]);
+          }
+        }
+
+        const savedDraft = window.localStorage.getItem(EMAIL_DRAFT_KEY);
+        if (savedDraft) {
+          const draft = JSON.parse(savedDraft) as {
+            cc?: unknown;
+            bcc?: unknown;
+            subject?: unknown;
+            message?: unknown;
+          };
+          setCc(typeof draft.cc === "string" ? draft.cc : "");
+          setBcc(typeof draft.bcc === "string" ? draft.bcc : "");
+          setComposerSubject(
+            typeof draft.subject === "string" ? draft.subject : ""
+          );
+          setComposerMessage(
+            typeof draft.message === "string" ? draft.message : ""
+          );
+        }
       } catch {
-        setNotice("Saved email cooldowns could not be loaded.");
-      }
-      const savedActivity = window.localStorage.getItem(EMAIL_ACTIVITY_KEY);
-      if (savedActivity) {
-        setActivity(JSON.parse(savedActivity) as EmailActivity[]);
-      }
-      const savedDraft = window.localStorage.getItem(EMAIL_DRAFT_KEY);
-      if (savedDraft) {
-        const draft = JSON.parse(savedDraft) as {
-          cc?: string;
-          bcc?: string;
-          subject?: string;
-          message?: string;
-        };
-        setCc(draft.cc || "");
-        setBcc(draft.bcc || "");
-        setComposerSubject(draft.subject || "");
-        setComposerMessage(draft.message || "");
+        setNotice("Saved email data could not be loaded.");
       }
       setNow(Date.now());
     }, 0);
@@ -904,10 +912,23 @@ function EmailSender({
   }
 
   function messageHtml(value: string) {
+    const allowedTags = new Set(["br", "b", "strong", "i", "em", "u", "p", "div", "ul", "ol", "li"]);
+    const escapeHtml = (text: string) =>
+      text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
     return value
-      .split(/\r?\n/)
-      .map((line) => line || "<br>")
-      .join("<br>");
+      .split(/(<[^>]*>)/g)
+      .map((part) => {
+        const tagMatch = part.match(/^<\s*(\/?)\s*([a-z0-9]+)[^>]*>$/i);
+        if (!tagMatch) return escapeHtml(part);
+
+        const tagName = tagMatch[2].toLowerCase();
+        if (!allowedTags.has(tagName)) return "";
+
+        return `<${tagMatch[1] ? "/" : ""}${tagName}>`;
+      })
+      .join("")
+      .replace(/(?:<br>){3,}/g, "<br><br>");
   }
 
   function saveDraft() {
@@ -940,7 +961,7 @@ function EmailSender({
     window.localStorage.setItem(EMAIL_ACTIVITY_KEY, JSON.stringify(next.slice(0, 100)));
   }
 
-  async function sendComposedEmail() {
+  function sendComposedEmail() {
     const recipients = selectedEmails.filter((email) => !isCoolingDown(email));
     const parseRecipients = (value: string) =>
       value.split(/[,\s]+/).map((item) => item.trim()).filter(Boolean);
@@ -963,80 +984,78 @@ function EmailSender({
       return;
     }
 
-    const messages = recipients.map((email) => {
+    const openedRecipients = isMobileDevice() ? recipients.slice(0, 1) : recipients;
+    const openedAt = new Date().toISOString();
+    openedRecipients.forEach((email) => {
       const personalizedSubject = replacePlaceholders(composerSubject, email);
       const personalizedMessage = replacePlaceholders(composerMessage, email);
-      return {
-        to: email,
-        cc: ccRecipients,
-        bcc: bccRecipients,
-        subject: personalizedSubject,
-        text: personalizedMessage.replace(/<[^>]+>/g, ""),
-        html: messageHtml(personalizedMessage),
-      };
-    });
-    const id = `activity-${Date.now()}`;
-    const createdAt = new Date().toISOString();
-    updateActivity([
-      { id, recipients, subject: composerSubject, status: "pending", createdAt },
-      ...activity,
-    ]);
-
-    try {
-      const response = await fetch("/api/send-email", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages }),
-      });
-      const result = (await response.json().catch(() => ({}))) as {
-        results?: Array<{ to: string; status: "accepted" | "failed"; error?: string }>;
-        error?: string;
-      };
-      if (!response.ok || !result.results) {
-        throw new Error(result.error || "The email provider rejected the message.");
-      }
-      const failed = result.results.filter((item) => item.status === "failed");
-      const accepted = result.results.filter((item) => item.status === "accepted");
-      accepted.forEach((item) => markSent(item.to));
-      setActivity((current) => {
-        const nextActivity = current.map((item) =>
-        item.id === id
-          ? {
-              ...item,
-              status: (failed.length > 0 ? "failed" : "accepted") as EmailActivity["status"],
-              error: failed[0]?.error,
-            }
-          : item
-        );
-        window.localStorage.setItem(EMAIL_ACTIVITY_KEY, JSON.stringify(nextActivity.slice(0, 100)));
-        return nextActivity;
-      });
-      setNotice(
-        failed.length > 0
-          ? `${accepted.length} sent, ${failed.length} failed.`
-          : `${accepted.length} email${accepted.length === 1 ? "" : "s"} accepted for delivery.`
+      openGmailCompose(
+        email,
+        personalizedSubject,
+        personalizedMessage.replace(/<[^>]+>/g, ""),
+        ccRecipients.join(","),
+        bccRecipients.join(",")
       );
-      setComposerOpen(false);
-    } catch (error) {
-      setActivity((current) => {
-        const nextActivity = current.map((item) =>
-          item.id === id
-            ? {
-                ...item,
-                status: "failed" as const,
-                error: error instanceof Error ? error.message : "Send failed.",
-              }
-            : item
-        );
-        window.localStorage.setItem(EMAIL_ACTIVITY_KEY, JSON.stringify(nextActivity.slice(0, 100)));
-        return nextActivity;
-      });
-      setNotice(error instanceof Error ? error.message : "Email sending failed.");
-    }
+      markSent(email);
+    });
+
+    const activityItem: EmailActivity = {
+      id: `activity-${openedAt}`,
+      recipients: openedRecipients,
+      subject: composerSubject,
+      status: "opened",
+      createdAt: openedAt,
+    };
+    updateActivity([activityItem, ...activity]);
+    setComposerOpen(false);
+    setNotice(
+      isMobileDevice() && recipients.length > 1
+        ? `Gmail opened for ${openedRecipients[0]}. Select the next recipient when you return.`
+        : `${openedRecipients.length} Gmail compose window${openedRecipients.length === 1 ? "" : "s"} opened.`
+    );
   }
 
   function getMailtoLink(draft: EmailDraft) {
     return `mailto:${encodeURIComponent(draft.email)}?subject=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}`;
+  }
+
+  function isMobileDevice() {
+    return /Android|iPhone|iPad|iPod|Mobile/i.test(navigator.userAgent);
+  }
+
+  function getGmailComposeUrl(
+    email: string,
+    subject: string,
+    message: string,
+    cc = "",
+    bcc = ""
+  ) {
+    const query = `to=${encodeURIComponent(email)}&cc=${encodeURIComponent(cc)}&bcc=${encodeURIComponent(bcc)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`;
+    return {
+      android: `intent://co?${query}#Intent;scheme=googlegmail;package=com.google.android.gm;end`,
+      ios: `googlegmail://co?${query}`,
+      web: `https://mail.google.com/mail/?view=cm&fs=1&${query}`,
+    };
+  }
+
+  function openGmailCompose(
+    email: string,
+    subject: string,
+    message: string,
+    cc = "",
+    bcc = ""
+  ) {
+    const urls = getGmailComposeUrl(email, subject, message, cc, bcc);
+    if (isMobileDevice()) {
+      if (/Android/i.test(navigator.userAgent)) {
+        window.location.assign(urls.android);
+      } else {
+        window.location.assign(urls.ios);
+      }
+      return;
+    }
+
+    window.open(urls.web, "_blank", "noopener,noreferrer");
   }
 
   function openGmail(draft: EmailDraft) {
@@ -1044,8 +1063,17 @@ function EmailSender({
       setNotice(`${draft.email} cannot be sent again for two days.`);
       return;
     }
-    const url = `https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(draft.email)}&su=${encodeURIComponent(draft.subject)}&body=${encodeURIComponent(draft.body)}`;
-    const openedWindow = window.open(url, "_blank", "noopener,noreferrer");
+    const urls = getGmailComposeUrl(draft.email, draft.subject, draft.body);
+    const openedWindow = isMobileDevice()
+      ? null
+      : window.open(urls.web, "_blank", "noopener,noreferrer");
+    if (isMobileDevice()) {
+      if (/Android/i.test(navigator.userAgent)) {
+        window.location.assign(urls.android);
+      } else {
+        window.location.assign(urls.ios);
+      }
+    }
     openedEmailId.current += 1;
     const id = `${draft.email}-${openedEmailId.current}`;
     if (openedWindow) {
@@ -1351,7 +1379,7 @@ function EmailSender({
                 <button type="button" onClick={discardDraft} className="app-button rounded-xl border px-4 py-2 text-sm">Discard</button>
                 <button type="button" onClick={saveDraft} className="app-button rounded-xl border px-4 py-2 text-sm">{draftSaved ? "Draft saved" : "Save draft"}</button>
                 <button type="button" onClick={() => setPreviewMode((current) => !current)} className="app-button rounded-xl border px-4 py-2 text-sm">{previewMode ? "Edit" : "Preview"}</button>
-                <button type="button" onClick={sendComposedEmail} className="app-button rounded-xl bg-green-400 px-5 py-2 text-sm font-semibold text-green-950">Send</button>
+                <button type="button" onClick={sendComposedEmail} className="app-button rounded-xl bg-green-400 px-5 py-2 text-sm font-semibold text-green-950">Open in Gmail</button>
               </div>
             </section>
           </div>
