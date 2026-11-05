@@ -329,42 +329,42 @@ export default function Home() {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-8 text-white sm:px-6 lg:px-10">
+    <main className="app-shell min-h-screen px-4 py-8 text-green-50 sm:px-6 lg:px-10">
       <div className="mx-auto max-w-7xl">
         <header className="mb-8 flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
           <div>
             <div className="mb-2 flex items-center gap-2">
-              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-blue-600 text-xl font-bold">
+              <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-green-500 text-xl font-bold text-green-950 shadow-lg shadow-green-500/25">
                 S
               </div>
               <h1 className="text-2xl font-bold tracking-tight">Scoutool</h1>
             </div>
-            <p className="text-sm text-slate-400">
+            <p className="text-sm text-green-200/65">
               Website email discovery dashboard
             </p>
           </div>
 
-          <div className="flex items-center gap-2 self-start rounded-full border border-slate-700 bg-slate-900 px-4 py-2 text-sm">
+          <div className="app-panel flex items-center gap-2 self-start rounded-full border px-4 py-2 text-sm">
             <span
               className={`h-2 w-2 rounded-full ${
-                running ? "animate-pulse bg-blue-400" : "bg-emerald-400"
+                running ? "animate-pulse bg-green-300" : "bg-green-400"
               }`}
             />
             {running ? "Scanner running" : "Ready to scan"}
           </div>
         </header>
 
-        <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl sm:p-7">
+        <section className="app-panel mb-6 rounded-2xl border p-5 shadow-xl sm:p-7">
           <div className="mb-5 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="text-lg font-semibold">Website scanner</h2>
-              <p className="mt-1 text-sm text-slate-400">
+              <p className="mt-1 text-sm text-green-100/65">
                 Enter one website per line to discover publicly listed email
                 addresses.
               </p>
             </div>
 
-            <span className="text-sm text-slate-400">
+            <span className="text-sm text-green-100/60">
               {domains.length.toLocaleString()} / 1,000 websites
             </span>
           </div>
@@ -375,11 +375,11 @@ export default function Home() {
             disabled={running}
             placeholder={"example.com\nhttps://another-example.com\nthird-example.com"}
             rows={8}
-            className="w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm text-white outline-none transition placeholder:text-slate-600 focus:border-blue-500 focus:ring-2 focus:ring-blue-500/20 disabled:cursor-not-allowed disabled:opacity-60"
+            className="app-input w-full resize-y rounded-xl border p-4 text-sm text-green-50 outline-none transition placeholder:text-green-200/35 disabled:cursor-not-allowed disabled:opacity-60"
           />
 
           <div className="mt-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-green-100/45">
               Maximum 1,000 websites per scan.
             </p>
 
@@ -388,7 +388,7 @@ export default function Home() {
                 type="button"
                 onClick={() => setInput("")}
                 disabled={running || !input}
-                className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-medium text-slate-300 transition hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+                className="app-button rounded-xl border px-5 py-3 text-sm font-medium text-green-100/75 transition hover:bg-green-400/10 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Clear
               </button>
@@ -397,7 +397,7 @@ export default function Home() {
                 type="button"
                 onClick={startScraping}
                 disabled={running || domains.length === 0 || domains.length > 1000}
-                className="rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold text-white transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+                className="app-button rounded-xl bg-green-400 px-6 py-3 text-sm font-semibold text-green-950 transition hover:bg-green-300 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 {running ? "Scanning..." : "Start Scraping"}
               </button>
@@ -408,7 +408,7 @@ export default function Home() {
                   scanAbortController.current?.abort();
                   setEmailMode(true);
                 }}
-                className="rounded-xl border border-emerald-500/60 bg-emerald-500/10 px-6 py-3 text-sm font-semibold text-emerald-300 transition hover:bg-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-40"
+                className="app-button rounded-xl border border-green-300/60 bg-green-300/10 px-6 py-3 text-sm font-semibold text-green-200 transition hover:bg-green-300/20 disabled:cursor-not-allowed disabled:opacity-40"
               >
                 Send Email
               </button>
@@ -416,24 +416,24 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="mb-6 rounded-2xl border border-slate-800 bg-slate-900 p-5 sm:p-6">
+        <section className="app-panel mb-6 rounded-2xl border p-5 sm:p-6">
           <div className="mb-4 flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="font-semibold">Scan progress</h2>
-              <p className="mt-1 text-sm text-slate-400">
+              <p className="mt-1 text-sm text-green-100/65">
                 {currentSite
                   ? `Currently scanning: ${currentSite}`
                   : notice || "Waiting for a scan to begin."}
               </p>
             </div>
 
-            <span className="text-lg font-bold tabular-nums text-blue-400">
+            <span className="text-lg font-bold tabular-nums text-green-300">
               {progress}%
             </span>
           </div>
 
           <div
-            className="h-3 overflow-hidden rounded-full bg-slate-800"
+            className="h-3 overflow-hidden rounded-full bg-green-950/70"
             role="progressbar"
             aria-label="Scan progress"
             aria-valuemin={0}
@@ -441,12 +441,12 @@ export default function Home() {
             aria-valuenow={progress}
           >
             <div
-              className="h-full rounded-full bg-blue-500 transition-all duration-300"
+              className="h-full rounded-full bg-gradient-to-r from-green-500 to-emerald-300 transition-all duration-300"
               style={{ width: `${progress}%` }}
             />
           </div>
 
-          <div className="mt-3 flex justify-between text-xs text-slate-500">
+          <div className="mt-3 flex justify-between text-xs text-green-100/45">
             <span>{processed.toLocaleString()} processed</span>
             <span>{total.toLocaleString()} total</span>
           </div>
@@ -463,7 +463,7 @@ export default function Home() {
             title="Websites Processed"
             value={processed}
             description="Websites checked"
-            color="text-blue-400"
+            color="text-green-300"
           />
           <StatCard
             title="Errors"
@@ -479,11 +479,11 @@ export default function Home() {
           />
         </section>
 
-        <section className="overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
-          <div className="flex flex-col gap-3 border-b border-slate-800 p-5 sm:flex-row sm:items-center sm:justify-between">
+        <section className="app-panel overflow-hidden rounded-2xl border">
+          <div className="flex flex-col gap-3 border-b border-green-200/15 p-5 sm:flex-row sm:items-center sm:justify-between">
             <div>
               <h2 className="font-semibold">Discovered email addresses</h2>
-              <p className="mt-1 text-sm text-slate-400">
+              <p className="mt-1 text-sm text-green-100/65">
                 {results.length.toLocaleString()} unique results
               </p>
             </div>
@@ -492,7 +492,7 @@ export default function Home() {
               type="button"
               onClick={downloadCSV}
               disabled={results.length === 0}
-              className="rounded-xl border border-slate-700 px-5 py-3 text-sm font-semibold text-white transition hover:border-blue-500 hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40"
+              className="app-button rounded-xl border px-5 py-3 text-sm font-semibold text-green-50 transition hover:border-green-300 hover:bg-green-300/10 disabled:cursor-not-allowed disabled:opacity-40"
             >
               Download CSV
             </button>
@@ -589,6 +589,13 @@ type EmailDraft = {
 
 type EmailFilter = "all" | "sent" | "unsent";
 
+const EMAIL_COOLDOWN_KEY = "scoutool-email-cooldowns";
+const TWO_DAYS_MS = 2 * 24 * 60 * 60 * 1000;
+
+function getEmailCooldownExpiry() {
+  return Date.now() + TWO_DAYS_MS;
+}
+
 function EmailSender({ onBack }: { onBack: () => void }) {
   const [emails, setEmails] = useState("");
   const [storeUrls, setStoreUrls] = useState("");
@@ -602,27 +609,32 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   const [autoSending, setAutoSending] = useState(false);
   const [cooldowns, setCooldowns] = useState<Record<string, number>>({});
   const [emailFilter, setEmailFilter] = useState<EmailFilter>("all");
+  const [now, setNow] = useState(0);
   const fileInput = useRef<HTMLInputElement>(null);
   const autoSendTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const nextDraftIndex = useRef(0);
   const autoSendingRef = useRef(false);
 
   useEffect(() => {
-    try {
-      const saved = window.localStorage.getItem("scoutool-email-cooldowns");
-      if (saved) {
-        const parsed = JSON.parse(saved) as Record<string, number>;
-        setCooldowns(
-          Object.fromEntries(
-            Object.entries(parsed).filter(([, expiresAt]) => expiresAt > Date.now())
-          )
-        );
+    const loadTimer = window.setTimeout(() => {
+      try {
+        const saved = window.localStorage.getItem(EMAIL_COOLDOWN_KEY);
+        if (saved) {
+          const parsed = JSON.parse(saved) as Record<string, number>;
+          setCooldowns(
+            Object.fromEntries(
+              Object.entries(parsed).filter(([, expiresAt]) => expiresAt > Date.now())
+            )
+          );
+        }
+      } catch {
+        setNotice("Saved email cooldowns could not be loaded.");
       }
-    } catch {
-      setNotice("Saved email cooldowns could not be loaded.");
-    }
+      setNow(Date.now());
+    }, 0);
 
     return () => {
+      window.clearTimeout(loadTimer);
       if (autoSendTimer.current) {
         clearTimeout(autoSendTimer.current);
       }
@@ -631,14 +643,15 @@ function EmailSender({ onBack }: { onBack: () => void }) {
 
   useEffect(() => {
     const refreshCooldowns = () => {
+      setNow(Date.now());
       setDrafts((current) => current.map((draft) => {
-        const stillCooling = isCoolingDown(draft.email);
+        const stillCooling = (cooldowns[draft.email.trim().toLowerCase()] ?? 0) > now;
         return stillCooling === draft.sent ? draft : { ...draft, sent: stillCooling };
       }));
     };
     const timer = window.setInterval(refreshCooldowns, 60 * 1000);
     return () => window.clearInterval(timer);
-  }, [cooldowns]);
+  }, [cooldowns, now]);
 
   const emailList = emails.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
   const urlList = storeUrls.split(/\r?\n|,/).map((value) => value.trim()).filter(Boolean);
@@ -717,15 +730,15 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   }
 
   function isCoolingDown(email: string) {
-    return (cooldowns[email.trim().toLowerCase()] ?? 0) > Date.now();
+    return (cooldowns[email.trim().toLowerCase()] ?? 0) > now;
   }
 
   function markSent(email: string) {
     const key = email.trim().toLowerCase();
-    const expiresAt = Date.now() + 2 * 24 * 60 * 60 * 1000;
+    const expiresAt = getEmailCooldownExpiry();
     setCooldowns((current) => {
       const next = { ...current, [key]: expiresAt };
-      window.localStorage.setItem("scoutool-email-cooldowns", JSON.stringify(next));
+      window.localStorage.setItem(EMAIL_COOLDOWN_KEY, JSON.stringify(next));
       return next;
     });
     setDrafts((current) => current.map((draft) =>
@@ -736,7 +749,7 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   }
 
   function cooldownLabel(email: string) {
-    const remaining = Math.max(0, (cooldowns[email.trim().toLowerCase()] ?? 0) - Date.now());
+    const remaining = Math.max(0, (cooldowns[email.trim().toLowerCase()] ?? 0) - now);
     if (remaining === 0) return "";
     const hours = Math.ceil(remaining / (60 * 60 * 1000));
     return `Available in ${hours}h`;
@@ -936,53 +949,53 @@ function EmailSender({ onBack }: { onBack: () => void }) {
   }
 
   return (
-    <main className="min-h-screen bg-slate-950 px-4 py-8 text-white sm:px-6 lg:px-10">
+    <main className="app-shell min-h-screen px-4 py-8 text-green-50 sm:px-6 lg:px-10">
       <div className="mx-auto max-w-5xl">
         <header className="mb-8 flex flex-wrap items-center justify-between gap-4">
           <div className="flex items-center gap-3">
-            <button type="button" onClick={onBack} className="text-slate-400 hover:text-white">← Scanner</button>
-            <div className="h-8 w-px bg-slate-700" />
-            <div><h1 className="text-2xl font-bold tracking-tight">Scoutool</h1><p className="text-sm text-slate-400">Email sender</p></div>
+            <button type="button" onClick={onBack} className="text-green-200/65 hover:text-green-200">← Scanner</button>
+            <div className="h-8 w-px bg-green-200/20" />
+            <div><h1 className="text-2xl font-bold tracking-tight">Scoutool</h1><p className="text-sm text-green-200/65">Email sender</p></div>
           </div>
           <div className="flex gap-2">
             <input ref={fileInput} type="file" accept=".csv,text/csv" onChange={importCSV} className="hidden" />
-            <button type="button" onClick={() => fileInput.current?.click()} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">Import CSV</button>
-            <button type="button" onClick={clearSender} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">Clear</button>
-            <button type="button" onClick={() => setNotice("Use {store} in the subject or body to personalize each email.")} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800">Help</button>
+            <button type="button" onClick={() => fileInput.current?.click()} className="app-button rounded-xl border px-4 py-2 text-sm hover:bg-green-300/10">Import CSV</button>
+            <button type="button" onClick={clearSender} className="app-button rounded-xl border px-4 py-2 text-sm hover:bg-green-300/10">Clear</button>
+            <button type="button" onClick={() => setNotice("Use {store} in the subject or body to personalize each email.")} className="app-button rounded-xl border px-4 py-2 text-sm hover:bg-green-300/10">Help</button>
           </div>
         </header>
 
-        <section className="rounded-2xl border border-slate-800 bg-slate-900 p-5 shadow-xl sm:p-7">
+        <section className="app-panel rounded-2xl border p-5 shadow-xl sm:p-7">
           <div className="grid gap-5 md:grid-cols-2">
-            <label className="text-sm font-medium text-slate-300">Emails
-              <textarea value={emails} onChange={(event) => setEmails(event.target.value)} placeholder={"email@store.com\nhello@shop.fr"} rows={7} className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm text-white outline-none focus:border-blue-500" />
+            <label className="text-sm font-medium text-green-100/80">Emails
+              <textarea value={emails} onChange={(event) => setEmails(event.target.value)} placeholder={"email@store.com\nhello@shop.fr"} rows={7} className="app-input mt-2 w-full resize-y rounded-xl border p-4 text-sm text-green-50 outline-none" />
             </label>
-            <label className="text-sm font-medium text-slate-300">Store URLs
-              <textarea value={storeUrls} onChange={(event) => setStoreUrls(event.target.value)} placeholder={"https://store.com\nhttps://shop.fr"} rows={7} className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-4 text-sm text-white outline-none focus:border-blue-500" />
+            <label className="text-sm font-medium text-green-100/80">Store URLs
+              <textarea value={storeUrls} onChange={(event) => setStoreUrls(event.target.value)} placeholder={"https://store.com\nhttps://shop.fr"} rows={7} className="app-input mt-2 w-full resize-y rounded-xl border p-4 text-sm text-green-50 outline-none" />
             </label>
-            <label className="text-sm font-medium text-slate-300">Subject <span className="text-slate-500">{"{store}"} is personalized</span>
-              <input value={subject} onChange={(event) => setSubject(event.target.value)} className="mt-2 w-full rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-blue-500" />
+            <label className="text-sm font-medium text-green-100/80">Subject <span className="text-green-200/45">{"{store}"} is personalized</span>
+              <input value={subject} onChange={(event) => setSubject(event.target.value)} className="app-input mt-2 w-full rounded-xl border p-3 text-sm text-green-50 outline-none" />
             </label>
-            <label className="text-sm font-medium text-slate-300">Body <span className="text-slate-500">{"{store}"} is personalized</span>
-              <textarea value={body} onChange={(event) => setBody(event.target.value)} rows={3} className="mt-2 w-full resize-y rounded-xl border border-slate-700 bg-slate-950 p-3 text-sm text-white outline-none focus:border-blue-500" />
+            <label className="text-sm font-medium text-green-100/80">Body <span className="text-green-200/45">{"{store}"} is personalized</span>
+              <textarea value={body} onChange={(event) => setBody(event.target.value)} rows={3} className="app-input mt-2 w-full resize-y rounded-xl border p-3 text-sm text-green-50 outline-none" />
             </label>
           </div>
           <div className="mt-5 flex flex-wrap items-center justify-between gap-3">
-            <span className="text-sm text-slate-400">{readyCount}/{Math.max(emailList.length, urlList.length)} ready</span>
-            <button type="button" onClick={generateDrafts} className="rounded-xl bg-blue-600 px-6 py-3 text-sm font-semibold hover:bg-blue-500">Generate</button>
+            <span className="text-sm text-green-100/60">{readyCount}/{Math.max(emailList.length, urlList.length)} ready</span>
+            <button type="button" onClick={generateDrafts} className="app-button rounded-xl bg-green-400 px-6 py-3 text-sm font-semibold text-green-950 hover:bg-green-300">Generate</button>
           </div>
         </section>
 
-        <section className="mt-6 overflow-hidden rounded-2xl border border-slate-800 bg-slate-900">
-            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-slate-800 p-5">
-              <div><h2 className="font-semibold">Auto-send</h2><p className="mt-1 text-sm text-slate-400">{drafts.length ? `${drafts.filter((draft) => !draft.sent).length} unsent · sends directly without opening tabs` : "Generate emails or import a CSV to begin"}</p></div>
+        <section className="app-panel mt-6 overflow-hidden rounded-2xl border">
+            <div className="flex flex-wrap items-center justify-between gap-4 border-b border-green-200/15 p-5">
+              <div><h2 className="font-semibold">Auto-send</h2><p className="mt-1 text-sm text-green-100/60">{drafts.length ? `${drafts.filter((draft) => !draft.sent).length} unsent · sends directly without opening tabs` : "Generate emails or import a CSV to begin"}</p></div>
               <div className="flex flex-wrap items-center gap-2">
-                <label className="text-sm text-slate-400">Every <input type="number" min={1} value={intervalSeconds} onChange={(event) => setIntervalSeconds(Math.max(1, Number(event.target.value) || 1))} className="ml-1 w-16 rounded-lg border border-slate-700 bg-slate-950 px-2 py-2 text-center text-white" /> sec</label>
-                <button type="button" onClick={autoSending ? stopAutoSend : startAutoSend} disabled={drafts.length === 0} className="rounded-xl bg-emerald-600 px-4 py-2 text-sm font-semibold hover:bg-emerald-500 disabled:cursor-not-allowed disabled:opacity-40">{autoSending ? "Stop" : "Start"}</button>
-                <button type="button" onClick={exportCSV} disabled={drafts.length === 0} className="rounded-xl border border-slate-700 px-4 py-2 text-sm hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-40">CSV</button>
+                <label className="text-sm text-green-100/60">Every <input type="number" min={1} value={intervalSeconds} onChange={(event) => setIntervalSeconds(Math.max(1, Number(event.target.value) || 1))} className="app-input ml-1 w-16 rounded-lg border px-2 py-2 text-center text-green-50" /> sec</label>
+                <button type="button" onClick={autoSending ? stopAutoSend : startAutoSend} disabled={drafts.length === 0} className="app-button rounded-xl bg-green-400 px-4 py-2 text-sm font-semibold text-green-950 hover:bg-green-300 disabled:cursor-not-allowed disabled:opacity-40">{autoSending ? "Stop" : "Start"}</button>
+                <button type="button" onClick={exportCSV} disabled={drafts.length === 0} className="app-button rounded-xl border px-4 py-2 text-sm hover:bg-green-300/10 disabled:cursor-not-allowed disabled:opacity-40">CSV</button>
               </div>
             </div>
-            <div className="flex flex-wrap gap-2 border-b border-slate-800 px-5 pt-4">
+            <div className="flex flex-wrap gap-2 border-b border-green-200/15 px-5 pt-4">
               {([
                 ["all", "All Emails", drafts.length],
                 ["sent", "Sent", drafts.filter((draft) => draft.sent).length],
@@ -994,15 +1007,15 @@ function EmailSender({ onBack }: { onBack: () => void }) {
                   onClick={() => setEmailFilter(filter)}
                   className={`border-b-2 px-3 py-2 text-sm font-medium transition ${
                     emailFilter === filter
-                      ? "border-blue-500 text-blue-400"
-                      : "border-transparent text-slate-400 hover:text-white"
+                      ? "border-green-300 text-green-300"
+                      : "border-transparent text-green-100/55 hover:text-green-100"
                   }`}
                 >
                   {label} ({count})
                 </button>
               ))}
             </div>
-            <div className="divide-y divide-slate-800">
+            <div className="divide-y divide-green-200/10">
               {drafts.length === 0 ? (
                 <p className="p-8 text-center text-sm text-slate-500">Auto-send is ready. Add emails and store URLs above, then click Generate.</p>
               ) : filteredDrafts.length === 0 ? (
