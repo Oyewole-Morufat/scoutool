@@ -1032,9 +1032,18 @@ function EmailSender({
   ) {
     const query = `to=${encodeURIComponent(email)}&cc=${encodeURIComponent(cc)}&bcc=${encodeURIComponent(bcc)}&subject=${encodeURIComponent(subject)}&body=${encodeURIComponent(message)}`;
     return {
-      native: `googlegmail://co?${query}`,
+      android: `intent://co?${query}#Intent;scheme=googlegmail;package=com.google.android.gm;action=android.intent.action.VIEW;end`,
+      ios: `googlegmail://co?${query}`,
       web: `https://mail.google.com/mail/?view=cm&fs=1&${query}`,
     };
+  }
+
+  function launchGmailApp(url: string) {
+    const link = document.createElement("a");
+    link.href = url;
+    link.target = "_self";
+    link.rel = "noopener";
+    link.click();
   }
 
   function openGmailCompose(
@@ -1046,8 +1055,10 @@ function EmailSender({
   ) {
     const urls = getGmailComposeUrl(email, subject, message, cc, bcc);
     if (isMobileDevice()) {
-      setNotice("Opening the installed Gmail app...");
-      window.location.assign(urls.native);
+      setNotice("Opening Gmail...");
+      launchGmailApp(
+        /Android/i.test(navigator.userAgent) ? urls.android : urls.ios
+      );
       return;
     }
 
@@ -1064,8 +1075,10 @@ function EmailSender({
       ? null
       : window.open(urls.web, "_blank", "noopener,noreferrer");
     if (isMobileDevice()) {
-      setNotice("Opening the installed Gmail app...");
-      window.location.assign(urls.native);
+      setNotice("Opening Gmail...");
+      launchGmailApp(
+        /Android/i.test(navigator.userAgent) ? urls.android : urls.ios
+      );
     }
     openedEmailId.current += 1;
     const id = `${draft.email}-${openedEmailId.current}`;
